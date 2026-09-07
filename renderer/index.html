@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self'; img-src 'self' data:;">
+<title>GLM 用量挂件</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body class="view-capsule" data-tier="low">
+
+<!-- E · 迷你胶囊（常驻形态） -->
+<section id="capsule" class="shell glass">
+  <span class="dot"></span>
+  <div class="rows">
+    <div class="grp"><span class="lab">5h</span><div class="bar"><span class="ghost g5"></span><i class="f5"></i><span class="edge e5"></span></div><b class="pv5">–</b></div>
+    <div class="grp"><span class="lab">周</span><div class="bar"><span class="ghost gW"></span><i class="fw"></i><span class="edge eW"></span></div><b class="pvw">–</b></div>
+  </div>
+  <button class="ref" id="refBtn" title="立即刷新">⟳</button>
+  <div class="hint hint-expired"><span class="warn">⚠ Cookie 已过期</span><span class="go">点击更新 ›</span></div>
+  <div class="hint hint-empty"><span class="go">◈ 点击设置 Cookie ›</span></div>
+</section>
+
+<!-- B · 展开面板 -->
+<section id="panel" class="shell glass">
+  <div class="phead">
+    <span class="dot"></span>GLM Coding <b class="lvl">–</b>
+    <span class="upd" id="upd">–</span>
+    <button class="ico" id="refBtn2" title="立即刷新">⟳</button>
+    <button class="ico" id="gearBtn" title="设置">⚙</button>
+  </div>
+  <div class="blk">
+    <div class="row">
+      <div>
+        <div class="pct"><b class="pv5">–</b><i>%</i></div>
+        <div class="sub">5小时额度 · <span class="cd5">–</span>后重置</div>
+      </div>
+      <div class="pts">积分<br><b class="u5">–</b> / <span class="t5">–</span><br><span class="rt5">–</span></div>
+    </div>
+    <div class="pbar"><span class="ghost g5"></span><i class="f5"></i><span class="edge e5"></span><div class="ptip"></div></div>
+  </div>
+  <div class="blk">
+    <div class="row">
+      <div>
+        <div class="pct"><b class="pvw">–</b><i>%</i></div>
+        <div class="sub">周额度 · <span class="cdw">–</span>后重置</div>
+      </div>
+      <div class="pts">积分<br><b class="uw">–</b> / <span class="tw">–</span><br><span class="rtw">–</span></div>
+    </div>
+    <div class="pbar"><span class="ghost gW"></span><i class="fw"></i><span class="edge eW"></span><div class="ptip"></div></div>
+  </div>
+  <div class="banner banner-expired">⚠ Cookie 已过期 <a id="fixBtn">去更新 ›</a></div>
+  <div class="banner banner-retry"><span id="errMsg">更新失败</span> <a id="retryBtn">重试 ›</a></div>
+  <div id="zoomTip" hidden></div>
+</section>
+
+<!-- G · 设置 -->
+<section id="settings" class="shell glass">
+  <div class="shead">
+    <button class="back" id="backBtn">‹ 返回</button>
+    <h3>设置</h3>
+  </div>
+  <label class="clab" for="tok">登录 Cookie / Token</label>
+  <textarea id="tok" spellcheck="false" placeholder="粘贴浏览器里的整段 Cookie，或只粘贴 bigmodel_token_production 的值"></textarea>
+  <span class="clipchip" id="clipchip">⟳ 检测到剪贴板中的新 Token，点击填入</span>
+  <div class="tstat na" id="tstat"><span id="tstatTxt">未配置</span><button class="clr" id="clrBtn">清除</button></div>
+  <ol class="guide">
+    <li>打开 <b>bigmodel.cn</b> 并登录（下方「打开官网」按钮直达）</li>
+    <li>按 <b>F12</b> 打开开发者工具 → 顶部切到「<b>应用 / Application</b>」标签</li>
+    <li>左侧「存储 → <b>Cookie</b>」→ 点开 <b>bigmodel.cn</b> 域名</li>
+    <li>列表中找 <b>bigmodel_token_production</b> → 双击「值」列全选 → <b>Ctrl+C</b> 复制</li>
+    <li>回到这里粘贴到上方输入框 → 点「保存并刷新」即可</li>
+  </ol>
+  <div class="grid">
+    <label>刷新频率
+      <select id="interval">
+        <option value="5">每 5 分钟</option>
+        <option value="10" selected>每 10 分钟（推荐）</option>
+        <option value="15">每 15 分钟</option>
+        <option value="30">每 30 分钟</option>
+        <option value="0">仅手动</option>
+      </select>
+    </label>
+    <label>超额提醒
+      <select id="threshold">
+        <option value="80" selected>用量 ≥ 80% 时</option>
+        <option value="60">用量 ≥ 60% 时</option>
+        <option value="0">关闭</option>
+      </select>
+    </label>
+    <label>界面主题
+      <select id="theme">
+        <option value="auto" selected>自动（跟随背景明暗）</option>
+        <option value="dark">强制深色玻璃</option>
+        <option value="light">强制浅色玻璃</option>
+      </select>
+    </label>
+  </div>
+  <label class="tgl"><input type="checkbox" id="autostart" checked>开机自动启动</label>
+  <label class="tgl"><input type="checkbox" id="ontop" checked>悬浮窗置顶显示</label>
+  <label class="tgl"><input type="checkbox" id="nreset">5小时额度重置时提醒</label>
+  <div class="btns">
+    <button class="btn pri" id="saveBtn">保存并刷新</button>
+    <button class="btn ghost" id="webBtn">打开官网</button>
+  </div>
+  <p class="note">默认 10 分钟自动刷新（附随机抖动），另有托盘「立即刷新」；请求直连 open.bigmodel.cn，不会被 CORS 拦截，也远低于限流阈值。Token 只保存在本机。</p>
+</section>
+
+<script src="../lib/format.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
