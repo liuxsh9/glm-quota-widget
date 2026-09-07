@@ -32,7 +32,7 @@ jobs:
           node --check lib/format.js
 
       - name: Build (installer + portable + zip)
-        run: npx electron-builder --win nsis portable zip --x64 -c.win.signAndEditExecutable=true
+        run: npx electron-builder --win nsis portable zip --x64 --config build/ci.yml
         env:
           ELECTRON_MIRROR: https://github.com/electron/electron/releases/download/
 

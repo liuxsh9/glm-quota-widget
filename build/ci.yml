@@ -1,0 +1,4 @@
+# CI 专用覆盖（Windows 原生环境）：启用 exe 图标/版本信息改写。
+# 本地 Linux 构建无 wine，package.json 里该项为 false，不加载此文件。
+win:
+  signAndEditExecutable: true
