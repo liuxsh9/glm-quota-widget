@@ -153,7 +153,7 @@ function fillSettings() {
     tok.value = '';
     tok.placeholder = c.hasToken
       ? `已保存 ·…${c.token.slice(-10)}（粘贴新值可替换）`
-      : '粘贴浏览器里的整段 Cookie，或只粘贴 bigmodel_token_production 的值';
+      : '粘贴 API Key（推荐，长期有效），或整段 Cookie / bigmodel_token_production 的值';
   }
   $('#interval').value = String(c.intervalMin);
   $('#threshold').value = String(c.notifyThreshold);
@@ -175,11 +175,11 @@ function fillSettings() {
 
 async function peekClipboard() {
   try {
-    const jwt = await api.clipboardPeek();
-    if (jwt && (!st || !st.config.token || jwt !== st.config.token)) {
+    const tok = await api.clipboardPeek();
+    if (tok && (!st || !st.config.token || tok !== st.config.token)) {
       $('#clipchip').classList.add('show');
       $('#clipchip').onclick = () => {
-        $('#tok').value = jwt;
+        $('#tok').value = tok;
         tokDirty = true;
         $('#clipchip').classList.remove('show');
         $('#tok').focus();

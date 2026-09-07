@@ -12,9 +12,14 @@ function t(name, fn) {
 
 console.log('extractToken:');
 const JWT = 'eyJhbGciOiJIUzUxMiJ9.eyJ1c2VyX3R5cGUiOiJQRVJTT05BTCJ9.FAKE_sig_for_unit_tests';
+const KEY = 'abcdefghijklmnopqrstuvwxyzabcdef.abcdefghijklmnop'; // API Key 形态（32.16）
 t('整段 Cookie 提取', () => assert.strictEqual(extractToken(`ga=1; bigmodel_token_production=${JWT}; foo=bar`), JWT));
 t('纯 JWT 直通', () => assert.strictEqual(extractToken(JWT), JWT));
 t('混排文本兜底', () => assert.strictEqual(extractToken(`随便什么 ${JWT} 前后`), JWT));
+t('API Key 直通', () => assert.strictEqual(extractToken(KEY), KEY));
+t('混排文本中的 API Key', () => assert.strictEqual(extractToken(`key：${KEY} 请粘贴`), KEY));
+t('JWT 不被误判为 API Key', () => assert.strictEqual(extractToken(JWT), JWT));
+t('文件名等噪声不误判', () => assert.strictEqual(extractToken('见附件 document2024.backup01 与 README.md'), ''));
 t('垃圾输入返回空串', () => assert.strictEqual(extractToken('hello world'), ''));
 t('空输入安全', () => assert.strictEqual(extractToken(''), ''));
 t('未配 token → expired', async () => {
@@ -41,4 +46,20 @@ if (!token) {
     console.log(`  → level=${d.level} 5h ${d.five.percent}% (${d.five.used}/${d.five.total}) 周 ${d.week.percent}% (${d.week.used}/${d.week.total})`);
     console.log(`  → 5h 重置于 ${new Date(d.five.nextResetTime).toLocaleString('zh-CN')}`);
   })();
+}
+
+// API Key 鉴权联测（coding plan 的 ANTHROPIC_AUTH_TOKEN 即控制台 API Key，长期有效）
+const apiKey = process.env.ANTHROPIC_AUTH_TOKEN;
+if (apiKey && /^[A-Za-z0-9]{16,}\.[A-Za-z0-9]{12,}$/.test(apiKey)) {
+  console.log('\nfetchUsage API Key 联测:');
+  (async () => {
+    const r = await fetchUsage(apiKey);
+    if (!r.ok) { console.error('  ✗ 请求失败:', r.kind, r.msg); process.exitCode = 1; return; }
+    const d = r.data;
+    t('API Key 请求成功', () => assert.ok(true));
+    t('5h 与周额度都被解析', () => { assert.ok(d.five); assert.ok(d.week); });
+    console.log(`  → level=${d.level} 5h ${d.five.percent}% 周 ${d.week.percent}%`);
+  })();
+} else {
+  console.log('\n(跳过 API Key 联测：无 ANTHROPIC_AUTH_TOKEN env)');
 }

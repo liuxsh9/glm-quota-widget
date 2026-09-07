@@ -323,7 +323,7 @@ async function refresh(manual = false) {
       status.kind = 'ok'; status.msg = '';
       saveConfig();
 
-      if (wasExpired) notify('Cookie 已恢复', '用量数据恢复正常刷新');
+      if (wasExpired) notify('Token 已恢复', '用量数据恢复正常刷新');
       expiredNotified = false;
 
       const five = r.data.five;
@@ -345,7 +345,7 @@ async function refresh(manual = false) {
     }
     if (r.kind === 'expired') {
       status.kind = 'expired'; status.msg = r.msg;
-      if (!expiredNotified) { notify('Cookie 已过期', '点击挂件更新 Cookie'); expiredNotified = true; }
+      if (!expiredNotified) { notify('Token 已失效', '点击挂件更新 Token'); expiredNotified = true; }
       break lastDataKeeper;
     }
     if (r.kind === 'ratelimit') {
@@ -372,9 +372,9 @@ function updateTray() {
   if (status.kind === 'ok' && d) {
     const lv = d.level ? ` ${levelName(d.level)}` : '';
     tip = `GLM Coding${lv}\n5小时 ${d.five.percent}% · 周 ${d.week.percent}%\n重置 ${fmtResetTime(d.five.nextResetTime)}`;
-  } else if (status.kind === 'expired') tip = 'GLM 用量挂件\nCookie 已过期，点击更新';
+  } else if (status.kind === 'expired') tip = 'GLM 用量挂件\nToken 已失效，点击更新';
   else if (status.kind === 'ratelimit') tip = 'GLM 用量挂件\n限流退避中，稍后自动重试';
-  else if (status.kind === 'empty') tip = 'GLM 用量挂件\n未配置 Cookie，点击设置';
+  else if (status.kind === 'empty') tip = 'GLM 用量挂件\n未配置 Token，点击设置';
   else tip = 'GLM 用量挂件';
   tray.setToolTip(tip);
 

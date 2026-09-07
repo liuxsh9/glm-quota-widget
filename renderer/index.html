@@ -16,8 +16,8 @@
     <div class="grp"><span class="lab">周</span><div class="bar"><span class="ghost gW"></span><i class="fw"></i><span class="edge eW"></span></div><b class="pvw">–</b></div>
   </div>
   <button class="ref" id="refBtn" title="立即刷新">⟳</button>
-  <div class="hint hint-expired"><span class="warn">⚠ Cookie 已过期</span><span class="go">点击更新 ›</span></div>
-  <div class="hint hint-empty"><span class="go">◈ 点击设置 Cookie ›</span></div>
+  <div class="hint hint-expired"><span class="warn">⚠ Token 已失效</span><span class="go">点击更新 ›</span></div>
+  <div class="hint hint-empty"><span class="go">◈ 点击设置 Token ›</span></div>
 </section>
 
 <!-- B · 展开面板 -->
@@ -48,7 +48,7 @@
     </div>
     <div class="pbar"><span class="ghost gW"></span><i class="fw"></i><span class="edge eW"></span><div class="ptip"></div></div>
   </div>
-  <div class="banner banner-expired">⚠ Cookie 已过期 <a id="fixBtn">去更新 ›</a></div>
+  <div class="banner banner-expired">⚠ Token 已失效 <a id="fixBtn">去更新 ›</a></div>
   <div class="banner banner-retry"><span id="errMsg">更新失败</span> <a id="retryBtn">重试 ›</a></div>
   <div id="zoomTip" hidden></div>
 </section>
@@ -59,16 +59,16 @@
     <button class="back" id="backBtn">‹ 返回</button>
     <h3>设置</h3>
   </div>
-  <label class="clab" for="tok">登录 Cookie / Token</label>
-  <textarea id="tok" spellcheck="false" placeholder="粘贴浏览器里的整段 Cookie，或只粘贴 bigmodel_token_production 的值"></textarea>
+  <label class="clab" for="tok">API Key / 登录 Cookie</label>
+  <textarea id="tok" spellcheck="false" placeholder="粘贴 API Key（推荐，长期有效），或整段 Cookie / bigmodel_token_production 的值"></textarea>
   <span class="clipchip" id="clipchip">⟳ 检测到剪贴板中的新 Token，点击填入</span>
   <div class="tstat na" id="tstat"><span id="tstatTxt">未配置</span><button class="clr" id="clrBtn">清除</button></div>
   <ol class="guide">
-    <li>打开 <b>bigmodel.cn</b> 并登录（下方「打开官网」按钮直达）</li>
-    <li>按 <b>F12</b> 打开开发者工具 → 顶部切到「<b>应用 / Application</b>」标签</li>
-    <li>左侧「存储 → <b>Cookie</b>」→ 点开 <b>bigmodel.cn</b> 域名</li>
-    <li>列表中找 <b>bigmodel_token_production</b> → 双击「值」列全选 → <b>Ctrl+C</b> 复制</li>
-    <li>回到这里粘贴到上方输入框 → 点「保存并刷新」即可</li>
+    <li>推荐 <b>API Key</b>（长期有效，无需再管过期）：登录 bigmodel.cn → 控制台「<b>API Keys</b>」→ 创建/复制 Key</li>
+    <li>粘贴到上方输入框 → 点「保存并刷新」，一劳永逸</li>
+    <li>也可用登录 Cookie：官网页面按 <b>F12</b> → 「<b>应用 / Application</b>」→ 存储 → <b>Cookie</b> → bigmodel.cn</li>
+    <li>找 <b>bigmodel_token_production</b> → 双击「值」列全选 → <b>Ctrl+C</b> 复制（整段 Cookie 也可，自动提取）</li>
+    <li>Cookie 约 3 天失效，挂件会变红提醒，届时同流程粘贴新值即可</li>
   </ol>
   <div class="grid">
     <label>刷新频率

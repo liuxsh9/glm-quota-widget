@@ -323,7 +323,7 @@ body.st-expired #panel .blk { opacity: .45; }
 #settings .btns { display: flex; gap: 10px; margin-top: 12px; }
 #settings .note { margin-top: 12px; font-size: 11px; color: var(--ink3); line-height: 1.7; }
 
-/* Cookie 获取指引 */
+/* Token 获取指引 */
 #settings .guide {
   margin: 12px 0 0 18px; font-size: 11px; color: var(--ink3); line-height: 1.75;
 }
