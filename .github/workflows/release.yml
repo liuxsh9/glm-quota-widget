@@ -31,8 +31,11 @@ jobs:
           node --check lib/usage.js
           node --check lib/format.js
 
+      - name: Enable exe icon edit (Windows 原生环境无需 wine)
+        run: node -e "const fs=require('fs');const p=JSON.parse(fs.readFileSync('package.json'));p.build.win.signAndEditExecutable=true;fs.writeFileSync('package.json',JSON.stringify(p,null,2))"
+
       - name: Build (installer + portable + zip)
-        run: npx electron-builder --win nsis portable zip --x64 --config build/ci.yml
+        run: npx electron-builder --win nsis portable zip --x64 --publish never
         env:
           ELECTRON_MIRROR: https://github.com/electron/electron/releases/download/
 
