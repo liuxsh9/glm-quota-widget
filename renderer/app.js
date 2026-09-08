@@ -136,8 +136,8 @@ function updatePace() {
 function tickCountdowns() {
   if (!st || !st.data) return;
   const now = Date.now();
-  $$('.cd5').forEach((e) => (e.textContent = F.fmtCountdown(st.data.five.nextResetTime - now)));
-  $$('.cdw').forEach((e) => (e.textContent = F.fmtCountdown(st.data.week.nextResetTime - now)));
+  $$('.cd5').forEach((e) => (e.textContent = F.fmtCountdown((st.data.five.nextResetTime ?? NaN) - now)));
+  $$('.cdw').forEach((e) => (e.textContent = F.fmtCountdown((st.data.week.nextResetTime ?? NaN) - now)));
   updatePace();
 }
 

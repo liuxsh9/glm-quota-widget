@@ -73,3 +73,19 @@ console.log('\n解析失败诊断:');
   const r2 = await fetchUsage('x', async () => ({ status: 200, json: async () => ({ success: false, msg: 'boom' }) }));
   t('响应异常时 msg 带原文', () => { assert.strictEqual(r2.ok, false); assert.ok(r2.msg.includes('原文=')); });
 })();
+
+// 服务端响应变体容错：小写 type、缺失 nextResetTime
+console.log('\n响应变体容错:');
+(async () => {
+  const mk = (limits) => ({ status: 200, json: async () => ({ success: true, data: { limits, level: 'max' } }) });
+  const r = await fetchUsage('x', async () => mk([
+    { type: 'credit_limit', unit: 3, number: 5, usage: 28000, currentValue: 100, percentage: 1, nextResetTime: Date.now() + 3600e3 },
+    { type: 'CREDIT_LIMIT', unit: 6, number: 1, usage: 140000, currentValue: 70000, percentage: 50, nextResetTime: Date.now() + 5 * 86400e3 },
+  ]));
+  t('小写 credit_limit 也能解析', () => { assert.ok(r.ok); assert.strictEqual(r.data.five.percent, 1); assert.strictEqual(r.data.week.percent, 50); });
+  const r2 = await fetchUsage('x', async () => mk([
+    { type: 'credit_limit', unit: 3, number: 5, usage: 28000, currentValue: 100, percentage: 1 },
+    { type: 'credit_limit', unit: 6, number: 1, usage: 140000, currentValue: 70000, percentage: 50, nextResetTime: Date.now() + 5 * 86400e3 },
+  ]));
+  t('缺 nextResetTime 降级不整体失败', () => { assert.ok(r2.ok); assert.strictEqual(r2.data.five.nextResetTime, null); });
+})();
