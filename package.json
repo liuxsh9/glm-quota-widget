@@ -1,7 +1,7 @@
 {
   "name": "glm-quota-widget",
   "productName": "GLM 用量挂件",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "description": "GLM Coding Plan 用量悬浮挂件：5小时/周配额，托盘常驻（GLM Coding Plan quota floating widget）",
   "main": "main.js",
   "author": "liuxsh9",
