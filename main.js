@@ -86,6 +86,7 @@ let resolvedTheme = 'dark';   // 实际生效主题（auto 时由截屏采样决
 let dragging = false;         // 拖拽进行中：看门狗静默，避免把窗口拽出移动节奏
 let dragSilent = 0;
 let themeDebounce = 0;
+let lastParseRetryAt = 0;     // 解析失败自动重试的节流
 
 const status = { kind: 'boot', msg: '' }; // boot|loading|ok|expired|ratelimit|error|empty
 
@@ -355,6 +356,12 @@ async function refresh(manual = false) {
       break lastDataKeeper;
     }
     status.kind = 'error'; status.msg = r.msg; // 保留 lastData 展示旧值
+    // 解析失败多为过渡态（如 5h 窗口滚动瞬间字段不全）：15 秒后自动重试一次（5 分钟内最多一次）
+    if (r.kind === 'parse' && Date.now() - lastParseRetryAt > 5 * 60 * 1000) {
+      lastParseRetryAt = Date.now();
+      log('解析异常，15 秒后自动重试');
+      setTimeout(() => refresh(false), 15000);
+    }
   }
   broadcast();
   schedule();

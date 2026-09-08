@@ -63,3 +63,13 @@ if (apiKey && /^[A-Za-z0-9]{16,}\.[A-Za-z0-9]{12,}$/.test(apiKey)) {
 } else {
   console.log('\n(跳过 API Key 联测：无 ANTHROPIC_AUTH_TOKEN env)');
 }
+
+// 解析失败必须携带响应原文片段（排障用）
+console.log('\n解析失败诊断:');
+(async () => {
+  const bad = { status: 200, json: async () => ({ success: true, data: { limits: [{ type: 'CREDIT_LIMIT', percentage: 3 }] } }) };
+  const r1 = await fetchUsage('x', async () => bad);
+  t('额度缺失时 msg 带 limits 原文', () => { assert.strictEqual(r1.ok, false); assert.ok(r1.msg.includes('limits=')); });
+  const r2 = await fetchUsage('x', async () => ({ status: 200, json: async () => ({ success: false, msg: 'boom' }) }));
+  t('响应异常时 msg 带原文', () => { assert.strictEqual(r2.ok, false); assert.ok(r2.msg.includes('原文=')); });
+})();
