@@ -238,49 +238,53 @@ function refresh() {
   api.refreshNow();
 }
 
-/* 统一手势：按住拖动 = 移动窗口（带指针捕获 + rAF 合帧），原地松开 = onTap */
+/* 统一手势：按住拖动 = 移动窗口，原地松开 = onTap。
+   窗口位置由主进程按「光标绝对增量」算（lib/drag.js），这里只负责判定点击/拖拽、
+   把按下时的光标坐标送过去，并在拖动中持续发心跳 —— 渲染层的 screenX/Y 单位是
+   CSS 像素，缩放屏上和 DIP 不是一回事，所以一个字节的坐标都不参与窗口定位。 */
 let drag = null;
-const pending = { dx: 0, dy: 0, raf: 0 };
+const pending = { gx: 0, gy: 0, onTap: null };
+
+function dragListeners(on) {
+  const fn = on ? window.addEventListener : window.removeEventListener;
+  fn('pointermove', onDragMove);
+  fn('pointerup', onDragFinish);
+  fn('pointercancel', onDragFinish);
+  fn('blur', onDragFinish);
+}
+
 function makeDraggable(el, onTap) {
   el.addEventListener('pointerdown', (e) => {
     if (e.button !== 0 || e.target.closest('button, a, select, textarea, input, label, .clipchip')) return;
-    drag = { onTap, sx: e.screenX, sy: e.screenY, moved: false };
+    if (drag) return;
+    drag = { moved: false };
+    pending.gx = e.screenX; pending.gy = e.screenY; pending.onTap = onTap;
     try { el.setPointerCapture(e.pointerId); } catch { }
     e.preventDefault();
+    // 把锚点先交给主进程：光标滑出窗口矩形后就收不到 pointermove 了，靠主进程自己采样
+    api.dragStart(e.screenX, e.screenY);
+    dragListeners(true);
   });
 }
-window.addEventListener('pointermove', (e) => {
+
+function onDragMove(e) {
   if (!drag) return;
-  const dx = e.screenX - drag.sx, dy = e.screenY - drag.sy;
-  if (Math.abs(dx) + Math.abs(dy) > 4) drag.moved = true;
-  if (drag.moved) {
-    drag.sx = e.screenX; drag.sy = e.screenY;
-    // rAF 合帧：高回报率鼠标（125–500Hz）也只按刷新率发 IPC，消除消息风暴
-    pending.dx += dx; pending.dy += dy;
-    if (!pending.raf) {
-      pending.raf = requestAnimationFrame(() => {
-        pending.raf = 0;
-        api.dragBy(pending.dx, pending.dy);
-        pending.dx = pending.dy = 0;
-      });
-    }
+  if (!drag.moved && Math.abs(e.screenX - pending.gx) + Math.abs(e.screenY - pending.gy) > 3) {
+    drag.moved = true;
   }
-});
-window.addEventListener('pointerup', () => {
+  if (drag.moved) api.dragMove();   // 心跳：告诉主进程「还在拖，别被看门狗收掉」
+}
+
+function onDragFinish() {
   if (!drag) return;
-  const d = drag; drag = null;
-  if (d.moved) {
-    if (pending.raf) { // 把最后一帧补齐再收尾
-      cancelAnimationFrame(pending.raf);
-      pending.raf = 0;
-      api.dragBy(pending.dx, pending.dy);
-      pending.dx = pending.dy = 0;
-    }
-    api.dragEnd();
-    return;
+  const moved = drag.moved;
+  drag = null;
+  dragListeners(false);
+  api.dragEnd();
+  if (!moved && pending.onTap) {
+    try { pending.onTap(); } catch (err) { console.error('GLM_APP tap handler', err); }
   }
-  if (d.onTap) d.onTap();
-});
+}
 
 function expandTarget() {
   return st && (st.status === 'expired' || st.status === 'empty') ? 'settings' : 'panel';

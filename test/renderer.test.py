@@ -18,6 +18,7 @@ JWT = "eyJhbGciOiJIUzUxMiJ9.eyJ1c2VyX3R5cGUiOiJQRVJTT05BTCJ9.SIGnature_123"
 
 INIT = """
 window.__view = null; window.__saved = null; window.__tray = null; window.__cb = null; window.__ready = false; window.__ctx = 0;
+window.__dragStart = null; window.__dragMove = 0; window.__dragEnd = 0;
 window.__clip = '';
 const NOW = Date.now();
 window.__state = {
@@ -40,7 +41,10 @@ window.glm = {
   clipboardPeek: async () => window.__clip,
   setView: (v) => { window.__view = v; },
   setZoom: (z) => { window.__zoom = z; window.__state.config.zoom = z; window.__cb(window.__state); },
-  dragBy: () => { window.__drag = (window.__drag || 0) + 1; }, dragEnd: () => {}, ctxMenu: () => { window.__ctx++; },
+  dragStart: (gx, gy) => { window.__dragStart = [gx, gy]; },
+  dragMove: () => { window.__dragMove++; },
+  dragEnd: () => { window.__dragEnd++; },
+  ctxMenu: () => { window.__ctx++; },
   trayIcon: (u) => { window.__tray = u; },
   openExternal: () => {}, quit: () => {},
   onState: (cb) => { window.__cb = cb; },
@@ -197,17 +201,30 @@ with sync_playwright() as p:
     pg.keyboard.press("Escape")
     t("Esc → capsule", pg.evaluate("window.__view") == "capsule")
 
-    print("拖拽手势（JS 路径 + rAF 合帧）:")
-    pg.evaluate("s => { s.view='capsule'; window.__view=null; window.__cb(s); }", pg.evaluate("window.__state"))
+    print("拖拽手势（主进程按光标锚点定位）:")
+    pg.evaluate("s => { s.view='capsule'; window.__view=null; window.__dragMove=0; window.__dragEnd=0; window.__cb(s); }", pg.evaluate("window.__state"))
     pg.wait_for_function("document.body.className.includes('view-capsule')")
     pg.set_viewport_size({"width": 192, "height": 68})
     pg.mouse.move(96, 34)
     pg.mouse.down()
-    pg.mouse.move(140, 40, steps=6)   # 位移 > 4px → 进入拖拽
+    pg.wait_for_timeout(30)
+    t("按下即把光标锚点交给主进程", pg.evaluate("window.__dragStart") == [96, 34])
+    pg.mouse.move(140, 40, steps=6)   # 位移 > 3px → 进入拖拽
     pg.mouse.move(180, 60, steps=6)
+    pg.wait_for_timeout(50)
+    t("拖拽中持续发心跳", pg.evaluate("window.__dragMove >= 1"))
+    moved_no_tap = pg.evaluate("window.__view") is None   # 拖动中不该已展开
     pg.mouse.up()
     pg.wait_for_timeout(200)
-    t("拖拽走 IPC 且未触发点击", pg.evaluate("window.__view") is None and pg.evaluate("window.__drag >= 1"))
+    t("拖拽走 IPC 且未触发点击", moved_no_tap and pg.evaluate("window.__dragEnd") == 1)
+    # 原地按下松开仍要能展开（死区不能吃掉点击）
+    pg.evaluate("s => { s.view='capsule'; s.status='ok'; window.__view=null; window.__cb(s); }", pg.evaluate("window.__state"))
+    pg.wait_for_function("document.body.className.includes('view-capsule')")
+    pg.mouse.move(96, 34)
+    pg.mouse.down()
+    pg.mouse.up()
+    pg.wait_for_timeout(120)
+    t("原地点击仍触发展开", pg.evaluate("window.__view") == "panel")
 
     print("格式化函数:")
     t("fmtPoints 万", pg.evaluate("GLMFMT.fmtPoints(28000)") == "2.8万")

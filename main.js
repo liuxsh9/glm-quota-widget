@@ -8,6 +8,7 @@ const fs = require('fs');
 const net = require('electron').net;
 const { extractToken, fetchUsage } = require('./lib/usage');
 const { tierOf, levelName, fmtResetTime } = require('./lib/format');
+const drag = require('./lib/drag');
 
 const OVERVIEW_URL = 'https://www.bigmodel.cn/coding-plan/personal/overview';
 const IS_DEV = !app.isPackaged;
@@ -83,8 +84,9 @@ let hasAcrylic = false;
 let prevData = null;          // 内存中上一次数据（判断窗口滚动）
 let expiredNotified = false;
 let resolvedTheme = 'dark';   // 实际生效主题（auto 时由截屏采样决定）
-let dragging = false;         // 拖拽进行中：看门狗静默，避免把窗口拽出移动节奏
-let dragSilent = 0;
+let dragCtx = null;           // 拖拽上下文：{ ctx, pending, timer, idle, lastX, lastY } —— 见 bindIpc
+let dragDiag = false;         // 下次采样时打一条坐标系诊断日志（排障用，一次即止）
+let dragging = false;         // 拖拽进行中：看门狗静默、主题巡逻暂停
 let themeDebounce = 0;
 let lastParseRetryAt = 0;     // 解析失败自动重试的节流
 
@@ -542,32 +544,80 @@ function bindIpc() {
     applyView(config.view);
     broadcast();
   });
-  let lastDragLog = 0;
-  ipcMain.on('win:drag', (_e, { dx, dy }) => {
-    if (!win) return;
-    dragging = true;
-    clearTimeout(dragSilent);
-    dragSilent = setTimeout(() => { dragging = false; }, 400); // 渲染层丢帧兜底
-    const now = Date.now();
-    if (now - lastDragLog > 2000) { log('ipc win:drag …'); lastDragLog = now; }
-    const [x, y] = win.getPosition();
-    const [bw, bh] = win.getSize();
-    const wa = waUnion(); // 并集：允许拖到任意显示器
-    const nx = Math.min(Math.max(x + dx, wa.x), wa.x + wa.width - bw);
-    const ny = Math.min(Math.max(y + dy, wa.y), wa.y + wa.height - bh);
-    win.setPosition(nx, ny, false);
-  });
-  ipcMain.on('win:drag-end', () => {
-    if (!win) return;
+  /* ---------- 拖拽：主进程独占光标坐标系（详见 lib/drag.js 顶部注释） ---------- */
+  const DRAG_MS = 8;             // 采样节拍：约一帧一次，足够跟手又不至于刷爆 IPC/SetWindowPos
+  const dragTick = () => {
+    if (!dragCtx || !win || win.isDestroyed()) return;
+    const p = screen.getCursorScreenPoint();
+    if (dragCtx.pending) {                     // 越过死区才开始移动（原地按下=点击）
+      if (Math.abs(p.x - dragCtx.ctx.cx) + Math.abs(p.y - dragCtx.ctx.cy) <= 3) return;
+      dragCtx.pending = false;
+      dragging = true;
+      if (config.alwaysOnTop) {               // 拖拽期间持续置顶：SetWindowPos 会清掉 topmost 位
+        try { win.setAlwaysOnTop(true, 'screen-saver'); } catch { }
+      }
+    }
+    const b = drag.boundsFor(dragCtx.ctx, p.x, p.y);
+    if (b.x !== dragCtx.lastX || b.y !== dragCtx.lastY) {
+      dragCtx.lastX = b.x; dragCtx.lastY = b.y;
+      // 整块下发（尺寸钉死）：只改原点的话 frameless 窗口每次 setPosition 都会涨一圈，
+      // 拖久了变成「内容不变、四周留白越来越大」。见 lib/drag.js boundsFor 注释。
+      win.setBounds(b);
+    }
+    dragCtx.idle = 0;                          // 渲染层心跳到达，看门狗重新计时
+    if (dragDiag) {                            // 一次性诊断：坐标系是否一致 + 窗口有没有被撑大
+      if (!dragCtx.diag) {
+        dragCtx.diag = { p, b, t: Date.now() };
+      } else if (Date.now() - dragCtx.diag.t > 700) {
+        const dxw = b.x - dragCtx.diag.b.x, dxc = p.x - dragCtx.diag.p.x;
+        const now = win.getBounds();
+        dragDiag = false;
+        const d = screen.getDisplayNearestPoint(p);
+        // 位移比≈1 = 光标与窗口几何同空间（正常）；≈缩放系数 = 有一侧是物理像素，需换算
+        log('drag diag · cursor→win 位移比', (dxc ? dxw / dxc : 1).toFixed(3),
+          '· scale', d.scaleFactor, '· win', b,
+          '· 尺寸漂移', `${now.width - dragCtx.ctx.size.w}x${now.height - dragCtx.ctx.size.h}`, '· zoom', config.zoom);
+      }
+    }
+  };
+  const stopDrag = () => {
+    if (!dragCtx) return;
+    const timer = dragCtx.timer;
+    const wasMoving = !dragCtx.pending && dragging;   // 点击（未越过死区）不该触发收尾动作
+    dragCtx = null;
     dragging = false;
-    clearTimeout(dragSilent);
+    clearInterval(timer);
+    if (!wasMoving || !win || win.isDestroyed()) return;   // 点击：位置没变，不必写盘
     config.pos = { x: win.getPosition()[0], y: win.getPosition()[1] };
     saveConfig();
     assertTopmost();
     // 落定后再采样背景，避免拖拽尾顿（desktopCapturer 截屏有开销）
     clearTimeout(themeDebounce);
     themeDebounce = setTimeout(applyTheme, 350);
+  };
+  ipcMain.on('win:drag-start', (_e, { gx, gy }) => {
+    if (!win || win.isDestroyed()) return;
+    if (dragCtx) stopDrag();
+    const [wx, wy] = win.getPosition();
+    const [bw, bh] = win.getSize();
+    dragCtx = {
+      ctx: drag.begin({
+        cx: gx, cy: gy, wx, wy,
+        wa: waUnion(),                       // 并集：允许拖到任意显示器
+        size: { w: bw, h: bh },
+      }),
+      pending: true, idle: 0, lastX: wx, lastY: wy, diag: null,
+      timer: setInterval(dragTick, DRAG_MS),
+    };
+    dragDiag = true;
+    dragTick();
   });
+  ipcMain.on('win:drag-move', () => { if (dragCtx) dragCtx.idle = 0; });
+  // 看门狗：渲染层崩了/事件断流也不会把窗口卡在拖拽态（idle 以节拍计数 → 600ms）
+  ipcMain.on('win:drag-end', stopDrag);
+  setInterval(() => {
+    if (dragCtx && ++dragCtx.idle > 45) { log('拖拽心跳超时，强制结束'); stopDrag(); }
+  }, 120);
   ipcMain.on('ctx:menu', popupWindowMenu);
   ipcMain.on('tray:icon', (_e, url) => {
     if (typeof url === 'string' && url.startsWith('data:image/')) {

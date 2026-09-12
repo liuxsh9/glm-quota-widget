@@ -1,7 +1,7 @@
 {
   "name": "glm-quota-widget",
   "productName": "GLM 用量挂件",
-  "version": "0.4.3",
+  "version": "0.4.5",
   "description": "GLM Coding Plan 用量悬浮挂件：5小时/周配额，托盘常驻（GLM Coding Plan quota floating widget）",
   "main": "main.js",
   "author": "liuxsh9",
@@ -15,6 +15,7 @@
   "scripts": {
     "start": "electron .",
     "test:usage": "node test/usage.test.js",
+    "test:drag": "node test/drag.test.js",
     "test:renderer": "python3 test/renderer.test.py",
     "icon": "node tools/gen-icon.js",
     "dist:win": "electron-builder --win nsis portable",

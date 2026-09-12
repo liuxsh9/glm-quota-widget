@@ -44,7 +44,7 @@ Token 只保存在本机 `%APPDATA%/glm-usage-widget/config.json`，请求直连
 3. 也可用 Cookie：F12 → Application → Cookies → 复制 `bigmodel_token_production` 的值（或整段 Cookie，约 3 天失效）
 4. 粘贴到设置框 → **保存并刷新**。之后 Cookie 失效时挂件会自动变红提醒，同样流程粘贴新值即可
 
-快捷操作：胶囊**单击**=展开面板，**右键**=菜单，**拖动**=换位置（Windows 用系统原生拖拽，顺滑无迟滞）；展开态**拖动任意处**=移动、**点空白处**=收起、**Ctrl+滚轮**=等比缩放（80%–160%，Ctrl+0 复位），`Esc`=收起；托盘左键=展开/收起。设置页内置图文指引（API Key 与 Cookie 两种方式）。
+快捷操作：胶囊**单击**=展开面板，**右键**=菜单，**拖动**=换位置（主进程按光标锚点定位，缩放屏上同样跟手）；展开态**拖动任意处**=移动、**点空白处**=收起、**Ctrl+滚轮**=等比缩放（80%–160%，Ctrl+0 复位），`Esc`=收起；托盘左键=展开/收起。设置页内置图文指引（API Key 与 Cookie 两种方式）。
 
 ## 开发
 
@@ -53,6 +53,7 @@ npm install          # 已配置 npmmirror 镜像
 npm start            # 本地运行（F12 开 DevTools）
 npm run test:usage   # 数据层测试（需 /tmp/glm_token 或 GLM_TOKEN 放真实 token；有 ANTHROPIC_AUTH_TOKEN 时附带 API Key 鉴权联测）
 npm run test:renderer# 渲染层交互测试（需 python3 + playwright）
+npm run test:drag    # 拖拽引擎测试（模拟缩放屏下的光标跟随与窗口尺寸漂移）
 npm run icon         # 重新生成图标
 npm run dist:win     # 打包 Windows 安装版 + 便携版
 ```
