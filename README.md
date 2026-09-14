@@ -18,6 +18,19 @@ Windows 桌面悬浮挂件：一屏盯住 **GLM Coding Plan 的 5 小时/周额�
 - **托盘常驻**：动态图标（圆环=5h 用量，颜色随水位变化）+ 右键菜单，关窗口不退出
 - **背景自适应主题**：截屏采样挂件四周明暗——深色背景用暗夜玻璃，浅色背景（如资源管理器最大化）自动切浅色玻璃；可在设置里强制深色或浅色
 
+## 界面
+
+<img src="docs/hero.png" alt="胶囊 + GLM 面板 + DeepSeek 面板" width="860">
+
+<sub>左上：**常驻胶囊**（左 GLM 两条配额条、右 DeepSeek 余额与今日消费）· 左：**GLM 面板**（这张里 5 小时用量超出按时间均摊的预期，所以多出一段红橙「超支段」并挂 `▲`）· 右：**DeepSeek 面板**（四档消费图、峰谷时段徽标；余额平时是打码的，点一下才显示）</sub>
+
+<img src="docs/panel-light.png" alt="浅色主题" width="400"> <img src="docs/settings.png" alt="设置页" width="290">
+
+<sub>左：背景为浅色时自动切换浅色玻璃 · 右：设置页按「这个设置只影响谁」分三段，开关改完立即生效</sub>
+
+> 截图由 `python3 tools/shots.py` 生成：**全部使用假数据**（余额、消费、token、凭据尾号都是编的），
+> 不读取任何真实凭据、不联网，时钟也钉在固定时刻以保证可复现。
+
 ## 数据来源
 
 ### GLM（配额百分比）
@@ -120,6 +133,7 @@ npm run test:main    # 主进程集成测试：桩掉 electron 真实加载 main
 npm run test:renderer# 渲染层交互测试（需 python3 + playwright）
 npm run test:drag    # 拖拽引擎测试（模拟缩放屏下的光标跟随与窗口尺寸漂移）
 npm run icon         # 重新生成图标
+python3 tools/shots.py  # 重新生成 README 截图（假数据，需 playwright）
 npm run dist:win     # 打包 Windows 安装版 + 便携版
 ```
 
