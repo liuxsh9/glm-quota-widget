@@ -30,6 +30,9 @@ jobs:
           node --check preload.js
           node --check lib/usage.js
           node --check lib/format.js
+          node --check lib/drag.js
+          node --check lib/deepseek.js
+          node --check lib/ds-history.js
 
       - name: Enable exe icon edit (Windows 原生环境无需 wine)
         run: node -e "const fs=require('fs');const p=JSON.parse(fs.readFileSync('package.json'));p.build.win.signAndEditExecutable=true;fs.writeFileSync('package.json',JSON.stringify(p,null,2))"

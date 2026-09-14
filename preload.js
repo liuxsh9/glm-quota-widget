@@ -9,6 +9,7 @@ try {
     refreshNow: () => ipcRenderer.invoke('refresh:now'),
     clipboardPeek: () => ipcRenderer.invoke('clipboard:peek'),
     setView: (v) => ipcRenderer.send('view:set', v),
+    setTab: (t) => ipcRenderer.send('tab:set', t),
     setZoom: (z) => ipcRenderer.send('zoom:set', z),
     dragStart: (gx, gy) => ipcRenderer.send('win:drag-start', { gx, gy }),
     dragMove: () => ipcRenderer.send('win:drag-move'),
