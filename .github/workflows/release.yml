@@ -40,6 +40,11 @@ jobs:
           node --check lib/providers/deepseek.js
           node --check lib/providers/index.js
 
+      # 钩子失败时会静默保留平铺 zip（发版不能挂），加上真要打 10 分钟包，
+      # 所以先在 Windows 上把它的验收逻辑跑一遍 —— 免得又出现「本地过、CI 回退」
+      - name: Test packaging hook
+        run: npm run test:artifacts
+
       - name: Enable exe icon edit (Windows 原生环境无需 wine)
         run: node -e "const fs=require('fs');const p=JSON.parse(fs.readFileSync('package.json'));p.build.win.signAndEditExecutable=true;fs.writeFileSync('package.json',JSON.stringify(p,null,2))"
 

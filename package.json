@@ -23,6 +23,7 @@
     "pack": "electron-builder --dir",
     "test:deepseek": "node test/deepseek.test.js",
     "test:providers": "node test/providers.test.js",
+    "test:artifacts": "node test/artifacts.test.js",
     "test:main": "node test/main.test.js"
   },
   "devDependencies": {

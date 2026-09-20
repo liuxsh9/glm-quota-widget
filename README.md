@@ -142,6 +142,7 @@ npm run test:providers  # provider 注册表与各家实现（全 mock，不连�
 npm run test:main       # 主进程集成：桩掉 electron 真实加载 main.js，验迁移/CRUD/窗口尺寸联动
 npm run test:renderer   # 渲染层交互（需 python3 + playwright）
 npm run test:drag       # 拖拽几何
+npm run test:artifacts  # 打包钩子：在临时目录真打一份 zip，验里面套了 GLM-Usage-Widget/ 一层
 npm run icon            # 重新生成图标
 python3 tools/shots.py  # 重新生成 README 截图（假数据）
 npm run dist:win        # 打包 Windows 安装版 + 便携版（Linux 上出安装版需要 wine）
