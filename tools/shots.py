@@ -250,6 +250,11 @@ def main():
             pg.wait_for_timeout(500)
             put(pg, "set", state("settings"))
             pg.screenshot(path=str(OUT / "settings.png"))
+            # ③b 设置页的「通用」段（滚到底）：胶囊布局等全局项在这
+            fr = next(f for f in pg.frames if f.name == "set")
+            fr.evaluate("document.querySelector('#settings .sbody').scrollTop = 99999")
+            fr.wait_for_timeout(250)
+            pg.screenshot(path=str(OUT / "settings-general.png"))
             ctx.close()
             b.close()
     finally:
