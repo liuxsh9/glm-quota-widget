@@ -228,6 +228,11 @@ function clampX(x, w) {
   return Math.min(Math.max(x, wa.x), wa.x + wa.width - w);
 }
 
+function clampY(y, h) {
+  const wa = workArea();
+  return Math.min(Math.max(y, wa.y), wa.y + wa.height - h);
+}
+
 function applyView(view) {
   config.view = view;
   // 展开态按 zoom 等比缩放（内容 setZoomFactor + 窗口尺寸同步乘 zoom）；胶囊保持原始大小
@@ -781,7 +786,8 @@ function createWindow() {
   const s = winSize('capsule');
   const p = capsulePos();
   win = new BrowserWindow({
-    x: clampX(p.x, s.w), y: p.y,
+    // 初建先粗夹进主屏工作区（ready 时 applyView 再按最近屏精夹；y 以前没夹，副屏在上/下方时启动会出屏）
+    x: clampX(p.x, s.w), y: clampY(p.y, s.h),
     width: s.w, height: s.h,
     transparent: true, frame: false,
     resizable: false, thickFrame: false, // 改尺寸在 applyView 里临时解锁，平时锁死以避免系统隐形调节柄
@@ -1017,9 +1023,17 @@ if (!gotLock) {
 
     // 背景明暗巡逻：浮窗不动、底下窗口切换（深↔浅）也要跟着换肤；拖拽中不采样
     setInterval(() => { if (!dragging) applyTheme(); }, 20000);
-    screen.on('display-metrics-changed', () => {
-      if (win) { applyView(config.view); applyTheme(); } // 显示器变化后收回工作区内并重采样
-    });
+    // 显示器热插拔/分辨率缩放变化后，把窗口收回工作区内并重采样主题。
+    // 拔屏往往只对被拔的那块屏派发 display-removed（幸存屏度量没变 → metrics-changed 不来），
+    // 三个事件都得挂，否则胶囊会停在已消失的屏幕上（看不见也点不着，只能重启）；连发用防抖合并
+    let reflowTimer = 0;
+    const reflowDisplays = () => {
+      clearTimeout(reflowTimer);
+      reflowTimer = setTimeout(() => { if (win) { applyView(config.view); applyTheme(); } }, 50);
+    };
+    screen.on('display-metrics-changed', reflowDisplays);
+    screen.on('display-removed', reflowDisplays);
+    screen.on('display-added', reflowDisplays);
 
     app.on('window-all-closed', () => { /* 托盘常驻，不退出 */ });
   });

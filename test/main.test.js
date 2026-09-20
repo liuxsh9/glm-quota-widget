@@ -17,6 +17,8 @@ const CWD = path.join(__dirname, '..');
 const USERDATA = fs.mkdtempSync(path.join(os.tmpdir(), 'glm-main-test-'));
 const posted = [];        // 主进程推给渲染层的状态
 const handlers = {};      // 注册过的 IPC
+const screenHandlers = {}; // 注册过的 screen 事件
+const winOpts = {};       // BrowserWindow 构造参数（验初建位置夹取）
 let trayTip = '';
 let windowBounds = { x: 100, y: 100, width: 212, height: 64 };
 
@@ -50,7 +52,7 @@ const electronStub = {
     setLoginItemSettings: noop,
     quit: noop,
   },
-  BrowserWindow: function () { return mkWindow(); },
+  BrowserWindow: function (o) { Object.assign(winOpts, o); return mkWindow(); },
   Tray: function () { return { setContextMenu: noop, setToolTip: (v) => { trayTip = v; }, setImage: noop, on: noop }; },
   Menu: { buildFromTemplate: () => ({ popup: noop }) },
   ipcMain: {
@@ -65,7 +67,7 @@ const electronStub = {
     getDisplayMatching: () => ({ id: 1, bounds: { x: 0, y: 0, width: 1920, height: 1080 }, workArea: { x: 0, y: 0, width: 1920, height: 1040 } }),
     getAllDisplays: () => [{ workArea: { x: 0, y: 0, width: 1920, height: 1040 } }],
     getDisplayNearestPoint: () => ({ scaleFactor: 1 }),
-    on: noop,
+    on: (ev, fn) => { (screenHandlers[ev] = screenHandlers[ev] || []).push(fn); },
   },
   powerMonitor: ev,
   desktopCapturer: { getSources: async () => [] },
@@ -91,9 +93,11 @@ const glmToken = process.env.GLM_TOKEN
 const dsKey = process.env.DS_API_KEY || '';
 const hasCreds = !!(glmToken || dsKey);
 
-// 故意写成**旧版本**的配置格式：老用户升级上来的第一条路径就是这段迁移
+// 故意写成**旧版本**的配置格式：老用户升级上来的第一条路径就是这段迁移；
+// pos 故意越界（模拟胶囊留在已拔掉的扩展屏上），启动/显示器事件都应把它收回工作区
 fs.writeFileSync(path.join(USERDATA, 'config.json'), JSON.stringify({
   token: glmToken, dsToken: dsKey, intervalMin: 10, notifyThreshold: 75, paceAlert: true,
+  pos: { x: 4000, y: 1500 },
 }, null, 2));
 
 require(path.join(CWD, 'main.js'));
@@ -120,6 +124,10 @@ async function settle(timeoutMs = 30000) {
   t('renderer:ready / state:get / cfg:save / tab:set / view:set 均已注册',
     ['renderer:ready', 'state:get', 'cfg:save', 'tab:set', 'view:set', 'refresh:now', 'clipboard:peek']
       .every((k) => typeof handlers[k] === 'function'));
+
+  t('初建窗口位置已夹进主屏工作区（含 y：模拟胶囊留在已拔掉的扩展屏上）',
+    winOpts.x >= 0 && winOpts.x + winOpts.width <= 1920 && winOpts.y >= 0 && winOpts.y + winOpts.height <= 1040,
+    JSON.stringify(winOpts));
 
   await call('renderer:ready');
   const st = await settle();
@@ -225,6 +233,19 @@ async function settle(timeoutMs = 30000) {
   t('清空后 hasToken / dsHasToken / dsHasPlatform 全为假',
     !cleared.config.hasToken && !cleared.config.dsHasToken && !cleared.config.dsHasPlatform);
   t('状态一直有推给渲染层', posted.length > 0, posted.length + ' 次');
+
+  console.log('\n显示器热插拔（胶囊所在的扩展屏被拔掉也要能找回）:');
+  t('metrics-changed / removed / added 三个事件均已监听',
+    ['display-metrics-changed', 'display-removed', 'display-added']
+      .every((k) => (screenHandlers[k] || []).length === 1),
+    JSON.stringify(Object.keys(screenHandlers)));
+  windowBounds = Object.assign(windowBounds, { x: 4000, y: 1500 });   // 假装胶囊停在已消失的屏幕上
+  screenHandlers['display-removed'][0]();
+  await wait(150);   // 防抖 50ms + applyView 的 setImmediate
+  const wb = windowBounds;
+  t('display-removed → 窗口收回工作区内',
+    wb.x >= 0 && wb.y >= 0 && wb.x + wb.width <= 1920 && wb.y + wb.height <= 1040, JSON.stringify(wb));
+  t('落点 = 保存位置夹进工作区的角落', wb.x === 1920 - wb.width && wb.y === 1040 - wb.height, JSON.stringify(wb));
 
   // 凭据只落在本机 userData，测试结束顺手删掉
   try { fs.rmSync(USERDATA, { recursive: true, force: true }); } catch { /* 清理失败不影响结论 */ }
