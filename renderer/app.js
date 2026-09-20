@@ -1,5 +1,9 @@
 'use strict';
-/* 渲染层：胶囊（双列）/ 面板（GLM·DeepSeek 两页签）/ 设置 三视图，状态由主进程推送 */
+/* 渲染层编排：状态由主进程推送，骨架（胶囊列 / 面板页签 / 账户 chips / 设置分段）
+ * 全部按 GLMPROV 元数据动态生成；provider 专属视觉在 panes.js，设置页在 settings.js。
+ *
+ * 新增一家 provider：meta.js 一条 + 主进程实现 + panes.js 一个工厂（可选）——
+ * 本文件不认识任何具体 provider 名，天然可扩展。 */
 window.addEventListener('error', (e) => console.error('GLM_APP error:', e.message, `${e.filename}:${e.lineno}`));
 window.addEventListener('unhandledrejection', (e) => console.error('GLM_APP 未处理的拒绝:', e.reason));
 
@@ -15,112 +19,145 @@ if (!window.glm) {
 
 const api = window.glm;
 const F = window.GLMFMT;
-const OVERVIEW_URL = 'https://www.bigmodel.cn/coding-plan/personal/overview';
-const DS_URL = 'https://platform.deepseek.com/usage';
+const PROV = window.GLMPROV;
+const { esc, hhmm } = window.GLMPUI;
 const $ = (s) => document.querySelector(s);
-const $$ = (s) => document.querySelectorAll(s);
 
 let st = null;
-let tokDirty = false;        // 设置页三个凭据输入框是否被编辑过
-let dsTokDirty = false;
-let dsPlatDirty = false;
 let lastTrayUrl = '';
 let refreshing = false;
 let shownZoom = 1;
 let zoomTipTimer = 0;
-let chartSig = '';           // 柱状图的「数据指纹」：没变就不重建 DOM
+let settingsSig = '';        // 设置页结构指纹：账户清单没变就只回填、不重建
+let clipCache = null;        // 最近一次剪贴板识别（设置页重建后重放）
 
-/* ---------- 小工具 ---------- */
-function hhmm(ts) {
-  const d = new Date(ts);
-  return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
-}
-/** 货币符号：CNY→¥、USD→$、其余原样前缀 */
-function symOf(currency) {
-  return currency === 'USD' ? '$' : currency === 'CNY' || !currency ? '¥' : currency + ' ';
-}
-const money = (v, currency) => symOf(currency) + F.fmtMoney(v);
-const glmOf = () => (st && st.providers && st.providers.glm) || { status: 'boot', data: null };
-const dsOf = () => (st && st.providers && st.providers.ds) || { status: 'empty', balance: null, summary: null };
+/** pid → { pane:{el,update,tick}, capsule:{el,update}, prevIds } 每家一份实例 */
+const widgets = new Map();
+
+/* ---------- GLMPUI 胶水：panes.js / settings.js 回调回编排层 ---------- */
+window.GLMPUI.applyState = (s) => { if (s && s.providers) applyState(s); };
+window.GLMPUI.rerender = () => { if (st) applyState(st); };
+window.GLMPUI.invalidateSettings = () => { settingsSig = ''; };
+window.GLMPUI.setRange = (r) => {
+  if (st && st.config) st.config.dsRange = r;
+  applyState(st);              // 乐观先行：不等主进程回包
+  api.save({ dsRange: r });
+};
+/** 把某账户设为当前账户（胶囊 chip 走原生菜单、平铺模式点名字都汇到这里） */
+window.GLMPUI.activate = async (pid, id) => {
+  const ns = await api.accActivate({ provider: pid, id });
+  if (ns && ns.providers) applyState(ns);
+};
+/** 胶囊账户切换器：原生弹出菜单（自绘弹层会被 40px 高的窗口裁掉） */
+window.GLMPUI.accMenu = async (pid) => {
+  const ns = await api.accMenu({ provider: pid });
+  if (ns && ns.providers) applyState(ns);
+};
+window.GLMPUIgo = {
+  settings: () => { setViewLocal('settings'); api.setView('settings'); },
+};
 
 /* ---------- 状态渲染 ---------- */
-function statusClass() {
-  if (!st) return '';
+function providerIds(s) { return Object.keys(s.providers); }
+
+function activeAccOf(s, pid) {
+  const prov = s.providers[pid];
+  if (!prov) return null;
+  return prov.accounts.find((a) => a.id === prov.activeId) || prov.accounts[0] || null;
+}
+
+function credsOf(s, accId) {
+  const a = s.config.accounts.find((x) => x.id === accId);
+  return a ? a.creds : {};
+}
+
+/** 胶囊整体是否处于「平铺」：布局选 all，且至少有一家配了多个账户。
+ *  这是**全胶囊一个判断**，不是每家各判各的 —— 否则「GLM 两个号 + DeepSeek 一个号」
+ *  会出现 GLM 带名字行、DS 不带，左右两列高度和基线都对不齐。 */
+function capsuleTile(s) {
+  return s.config.capsuleLayout === 'all'
+    && providerIds(s).some((pid) => s.providers[pid].accounts.filter((a) => a.enabled !== false).length > 1);
+}
+
+/** pane/capsule 工厂要的上下文 */
+function paneCtx(s, pid, isTab) {
+  const meta = PROV.byId(pid);
+  const prov = s.providers[pid];
+  const acc = activeAccOf(s, pid);
   return {
-    ok: 'st-ok', loading: 'st-loading', expired: 'st-expired',
-    ratelimit: 'st-ratelimit', error: 'st-error', empty: 'st-empty', boot: 'st-loading',
-  }[glmOf().status] || '';
+    acc,
+    accounts: prov ? prov.accounts : [],
+    config: s.config,
+    tile: capsuleTile(s),   // 平铺布局（全胶囊统一：都带账户名行，或都不带）
+    isTab,
+    theme: s.theme,
+    peak: meta ? meta.peak : null,
+    accent: meta ? meta.accent : null,
+    site: meta ? meta.site : null,
+    siteLabel: meta ? meta.siteLabel : null,
+    accCreds: acc ? credsOf(s, acc.id) : {},
+  };
+}
+
+/** 确保每家 provider 的 pane/capsule 实例存在（provider 集变化时增删） */
+function ensureWidgets(s) {
+  const ids = providerIds(s);
+  for (const pid of ids) {
+    if (widgets.has(pid)) continue;
+    const ui = window.PANES[pid];
+    if (!ui) { console.error('GLM_APP 缺少 provider 界面渲染器:', pid); continue; }
+    const w = { pane: ui.pane(), capsule: ui.capsule(), ids: '' };
+    w.capsule.el.dataset.pid = pid;   // 胶囊列按 data-pid 认领自己的 provider（滚轮切换用）
+    widgets.set(pid, w);
+  }
+  for (const pid of [...widgets.keys()]) {
+    if (!ids.includes(pid)) widgets.delete(pid);
+  }
 }
 
 function applyState(s) {
   st = s;
-  const g = glmOf(), d = dsOf();
+  ensureWidgets(s);
   const c = s.config || {};
   const b = document.body;
-  const active = c.panelTab === 'ds' ? d : g;
+  const tabPid = c.panelTab;
+  const tabProv = s.providers[tabPid] || null;
+  const tabAcc = activeAccOf(s, tabPid);
+
   b.className = [
     'view-' + s.view,
-    statusClass(),
-    'tab-' + (c.panelTab === 'ds' ? 'ds' : 'glm'),
-    c.hasToken ? 'has-glm' : '',
-    c.dsHasToken ? 'has-ds' : '',
-    (!c.hasToken && !c.dsHasToken) ? 'no-providers' : '',
-    s.hasAcrylic ? 'acrylic' : '',
+    c.hasAcrylic || s.hasAcrylic ? 'acrylic' : '',
     s.theme === 'light' ? 'theme-light' : '',
-    active.status === 'expired' ? 'bn-expired'
-      : (active.status === 'error' || active.status === 'ratelimit') ? 'bn-retry' : 'bn-none',
+    providerIds(s).length ? '' : 'no-providers',
+    tabAcc && tabAcc.status === 'expired' ? 'bn-expired'
+      : (tabAcc && (tabAcc.status === 'error' || tabAcc.status === 'ratelimit')) ? 'bn-retry' : 'bn-none',
   ].filter(Boolean).join(' ');
+  b.dataset.tier = s.worstTier || 'low';
 
-  // 档位（颜色）：阈值与通知同源；过期时按高档显示红色
-  const w = c.warnThreshold;
-  b.dataset.tier = (g.data && g.status === 'ok')
-    ? F.tierOfPair(g.data.five.percent, g.data.week.percent, w)
-    : (g.status === 'expired' ? 'high' : 'low');
+  renderTabs(s);
+  renderAccRow(s);
+  renderCapsule(s);
+  renderPanes(s);
 
-  const gd = g.data;
-  b.style.setProperty('--p5', gd ? gd.five.percent : 0);
-  b.style.setProperty('--pw', gd ? gd.week.percent : 0);
-
-  $$('.pv5').forEach((e) => (e.textContent = gd ? gd.five.percent : '–'));
-  $$('.pvw').forEach((e) => (e.textContent = gd ? gd.week.percent : '–'));
-  if (gd) {
-    $$('.u5').forEach((e) => (e.textContent = F.fmtPoints(gd.five.used)));
-    $$('.t5').forEach((e) => (e.textContent = F.fmtPoints(gd.five.total)));
-    $$('.uw').forEach((e) => (e.textContent = F.fmtPoints(gd.week.used)));
-    $$('.tw').forEach((e) => (e.textContent = F.fmtPoints(gd.week.total)));
-    $$('.rt5').forEach((e) => (e.textContent = F.fmtResetTime(gd.five.nextResetTime)));
-    $$('.rtw').forEach((e) => (e.textContent = F.fmtResetTime(gd.week.nextResetTime)));
-    $$('.lvl').forEach((e) => (e.textContent = gd.level ? F.levelName(gd.level) : ''));
-  } else {
-    $$('.lvl').forEach((e) => (e.textContent = ''));   // 没数据时页签只留「GLM」，别挂个孤零零的 –
-  }
-  const isDs = c.panelTab === 'ds';
-  $('#tabGlm').classList.toggle('on', !isDs);
-  $('#tabDs').classList.toggle('on', isDs);
-
-  renderCapsuleDs();
-  renderDsPanel();
-  tickCountdowns();
-
-  // 面板头部：时间/状态跟随当前页签
+  // 面板头部：时间/状态跟随当前页签的当前账户
   const upd = $('#upd');
   const warn = { expired: 1, error: 1, ratelimit: 1 };
-  upd.classList.toggle('err', !!warn[active.status]);
-  upd.textContent = {
-    ok: active.lastFetchAt ? hhmm(active.lastFetchAt) + ' 更新' : '',
+  upd.classList.toggle('err', !!(tabAcc && warn[tabAcc.status]));
+  upd.textContent = tabAcc ? ({
+    ok: tabAcc.lastFetchAt ? hhmm(tabAcc.lastFetchAt) + ' 更新' : '',
     loading: '刷新中…',
     expired: '已过期',
     ratelimit: '限流退避中',
     error: '⚠ 更新失败',
     empty: '未配置',
     boot: '…',
-  }[active.status] || '';
-  $('#errMsg').textContent = (active.msg || '更新失败') + (c.panelTab === 'ds' ? '（DeepSeek）' : '');
+  }[tabAcc.status] || '') : '';
+  $('#errMsg').textContent = ((tabAcc && tabAcc.msg) || '更新失败') + (tabProv ? `（${tabProv.name}）` : '');
 
-  refreshing = active.status === 'loading';
+  refreshing = !!(tabAcc && tabAcc.status === 'loading');
   $('#refBtn2').classList.toggle('spin', refreshing);
 
-  fillSettings();
+  applySettings(s);
   drawTray();
 
   // 缩放提示：zoom 值变化时短暂显示百分比
@@ -138,291 +175,321 @@ function applyState(s) {
   if (s.view === 'settings') peekClipboard();
 }
 
-/* ---------- 胶囊右列：DeepSeek 余额 + 今日消费 ---------- */
-function renderCapsuleDs() {
-  const d = dsOf();
-  const col = $('#capsule .cap-ds');
-  if (!col) return;
-  const bal = d.balance;
-  const today = d.summary ? d.summary.today : null;
-  const cur = bal ? bal.currency : 'CNY';
-
-  $$('#capsule .dsbal').forEach((e) => (e.textContent = bal ? money(bal.total, cur) : '–'));
-  $$('#capsule .dstoday').forEach((e) => {
-    if (d.status === 'expired') e.textContent = 'Key 已失效';
-    else if (d.status === 'error') e.textContent = '更新失败';
-    else if (today != null && today > 0) e.textContent = '今日 ' + F.fmtMoney(today);
-    else e.textContent = today != null ? '今日 0.00' : '今日 –';
+/* ---------- 面板页签（按 provider 生成） ---------- */
+function renderTabs(s) {
+  const host = $('#tabs');
+  const ids = providerIds(s);
+  // 结构（页签集合）没变就不重建，只更新高亮与徽标
+  const sig = ids.join(',');
+  if (host.dataset.sig !== sig) {
+    host.dataset.sig = sig;
+    host.innerHTML = ids.map((pid) => {
+      const meta = PROV.byId(pid);
+      const badge = meta && meta.tabBadge === 'level' ? ' <b class="lvl"></b>' : '';
+      return `<button class="tab" data-pid="${pid}" role="tab">${esc(meta ? meta.tab : pid)}${badge}</button>`;
+    }).join('');
+    host.querySelectorAll('.tab').forEach((t) => {
+      t.addEventListener('click', (e) => {
+        e.stopPropagation();
+        api.setTab(t.dataset.pid);
+        if (st && st.config) { st.config.panelTab = t.dataset.pid; applyState(st); }   // 乐观先行
+      });
+    });
+  }
+  host.querySelectorAll('.tab').forEach((t) => {
+    const pid = t.dataset.pid;
+    t.classList.toggle('on', pid === s.config.panelTab);
+    const lvl = t.querySelector('.lvl');
+    if (lvl) {
+      const acc = activeAccOf(s, pid);
+      const d = acc && acc.data;
+      lvl.textContent = d && d.level ? F.levelName(d.level) : '';
+    }
   });
-  col.classList.toggle('warn', d.status === 'expired' || d.status === 'error');
-  // 有旧值但当前拉取失败：压暗表示「不是最新的」
-  col.classList.toggle('dim', !!bal && d.status !== 'ok');
 }
 
-/* ---------- 面板 DeepSeek 视图 ----------
-   只有**主余额**默认打码（那是最扎眼的一行）；今日/近 7 天/本月这些照常显示。
-   打码状态只在内存里，重启回到打码态。 */
-let dsReveal = false;
-
-function renderDsPanel() {
-  const d = dsOf();
-  const s = d.summary;
-  const bal = d.balance;
-  const cur = bal ? bal.currency : 'CNY';
-  const mon = (v) => (v == null ? '–' : money(v, cur));
-
-  document.body.classList.toggle('ds-masked', !dsReveal);
-  const balEl = $('#panel .dstotal');
-  if (balEl) balEl.textContent = bal ? (dsReveal ? F.fmtMoney(bal.total) : '••••') : '–';
-  const curEl = $('#panel .ds-bal .cur');
-  if (curEl) curEl.textContent = symOf(cur);
-
-  // 账户状态与余额同行（省一行高度，两个页签才能等高）
-  const sub = $('#dsSub');
-  if (sub) {
-    if (d.status === 'expired') sub.innerHTML = '<span class="warn">⚠ Key 已失效</span>';
-    else if (d.status === 'error') sub.innerHTML = '<span class="warn">⚠ 更新失败</span>';
-    else if (d.status === 'ratelimit') sub.innerHTML = '<span class="warn">⚠ 限流退避中</span>';
-    else if (bal) sub.textContent = bal.available ? (bal.granted > 0 ? `含赠送 ${money(bal.granted, cur)}` : '全部为充值余额') : '⚠ 余额不足';
-    else sub.textContent = '';
+/* ---------- 账户 chips 行（某家配了多个账户才出现） ---------- */
+function renderAccRow(s) {
+  const row = $('#accRow');
+  const multi = providerIds(s).some((pid) => s.providers[pid].accounts.length > 1);
+  row.hidden = !multi;
+  if (!multi) return;
+  const pid = s.config.panelTab;
+  const prov = s.providers[pid];
+  if (!prov) { row.innerHTML = ''; return; }
+  const sig = pid + '|' + prov.accounts.map((a) => `${a.id}:${a.name}:${a.enabled ? 1 : 0}`).join(',');
+  if (row.dataset.sig !== sig) {
+    row.dataset.sig = sig;
+    row.innerHTML = prov.accounts.map((a) =>
+      `<button class="acc-chip${a.enabled === false ? ' acc-chip-off' : ''}" data-id="${a.id}">${esc(a.name)}</button>`).join('');
+    row.querySelectorAll('.acc-chip').forEach((chipEl) => {
+      chipEl.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        const ns = await api.accActivate({ provider: pid, id: chipEl.dataset.id });
+        if (ns && ns.providers) applyState(ns);
+      });
+    });
   }
+  // 高亮跟随 activeId：切账户不重建行，只换 on
+  row.querySelectorAll('.acc-chip').forEach((chipEl) => {
+    chipEl.classList.toggle('on', chipEl.dataset.id === prov.activeId);
+  });
+}
 
-  $$('#panel .ds-today').forEach((e) => (e.textContent = s ? mon(s.today) : '–'));
-  $$('#panel .ds-wk').forEach((e) => (e.textContent = s ? mon(s.last7) : '–'));
-  $$('#panel .ds-mo').forEach((e) => (e.textContent = s ? mon(s.month) : '–'));
-
-  const range = (st && st.config && st.config.dsRange) || '7d';
-  $('#dsR1').classList.toggle('on', range === '1h');
-  $('#dsR24').classList.toggle('on', range === '24h');
-  $('#dsR7').classList.toggle('on', range === '7d');
-  $('#dsR30').classList.toggle('on', range === '30d');
-  $('#dsRange').textContent = rangeLabel(range, s, mon);
-
-  renderChart(range, cur);
-
-  const left = $('#dsLeft');
-  if (left) {
-    if (!s) left.textContent = '–';
-    else {
-      // 1 小时档的标题已经写了「近 1 小时合计」，脚注就换成更细的滚动窗口，别重复
-      const recent = range === '1h' ? `最近 5 分钟 ${mon(s.last5m)}` : `近 1 小时 ${mon(s.last1h)}`;
-      left.textContent = `${recent} · 日均 ${mon(s.avg7)}`;
+/* ---------- 胶囊（按 provider 出列，多列之间竖发丝线） ---------- */
+function renderCapsule(s) {
+  const cap = $('#capsule');
+  const hint = cap.querySelector('.hint');
+  const ids = providerIds(s);
+  const sig = ids.join(',');
+  cap.classList.toggle('cap-tiled', capsuleTile(s));   // 组间分隔线的样式跟着平铺与否走
+  if (cap.dataset.sig !== sig) {
+    cap.dataset.sig = sig;
+    cap.querySelectorAll('.cap-grp, .cap-sep').forEach((e) => e.remove());
+    let first = true;
+    for (const pid of ids) {
+      if (!first) {
+        const sep = document.createElement('div');
+        sep.className = 'cap-sep';
+        cap.insertBefore(sep, hint);
+      }
+      first = false;
+      const w = widgets.get(pid);
+      if (w) cap.insertBefore(w.capsule.el, hint);
     }
+    bindCapsuleWheel(s);
   }
-  const right = $('#dsRight');
-  if (right) right.textContent = (s && s.daysLeft != null) ? `可用 ${s.daysLeft} 天` : '';
-
-  renderDsDetail(d, mon);
+  for (const pid of ids) {
+    const w = widgets.get(pid);
+    if (w) w.capsule.update(paneCtx(s, pid, false));
+  }
+  syncCapsuleSize();
 }
 
-/** 区间标题顺带给出该区间的合计，省得再挤一行 */
-function rangeLabel(range, s, mon) {
-  if (!s) return '近 7 天消费';
-  if (range === '1h') return `近 1 小时 ${mon(s.last1h)}`;
-  if (range === '24h') {
-    const sum = (s.hourly || []).reduce((a, h) => a + h.spend, 0);
-    return `近 24 小时 ${mon(sum)}`;
-  }
-  if (range === '30d') return `近 30 天 ${mon(s.last30)}`;
-  return `近 7 天 ${mon(s.last7)}`;
-}
-
-/** 「?」浮层：数据来源、口径、token 明细。绝对定位，不参与布局（面板高度恒定） */
-function renderDsDetail(d, mon) {
-  const el = $('#dsSrc');
-  if (!el) return;
-  const s = d.summary;
-  const lines = [];
-  const link = (txt, url) => `<a href="#" data-url="${url}">${txt}</a>`;
-
-  // 浮层可用高度只有 ~90px：每行控制在 25 个汉字内，总行数不超过 4 行
-  if (!st.config.dsHasToken) {
-    lines.push('未配置 API Key · <a href="#" data-view="settings">去配置 ›</a>');
-  } else if (s && s.source === 'platform') {
-    lines.push('来源：<b>平台账单</b> · UTC 日界');
-    const t = d.tokens && d.tokens.total;
-    if (t && t.total > 0) {
-      const hit = t.promptTokens > 0 ? Math.round((t.cacheHit / t.promptTokens) * 100) : 0;
-      lines.push(`本月 ${F.fmtTokens(t.total)} tok · 缓存命中 ${hit}%`);
-      lines.push('图表格：1 小时按 5 分钟 · 24 小时按小时 · 7/30 天按天');
-    }
-    if (s.byModel && s.byModel.length) lines.push(`按模型：${fmtTopModels(s, mon)}`);
-  } else {
-    const since = s && s.firstSampleAt ? new Date(s.firstSampleAt) : null;
-    const when = since ? `${String(since.getMonth() + 1).padStart(2, '0')}-${String(since.getDate()).padStart(2, '0')} ${hhmm(since)}` : '';
-    lines.push(`来源：<b>本地余额差值</b> · 自 ${when || '本次启动'}`);
-    lines.push(`余额每 ${st.config.dsPollMin || 2} 分钟一采，实时读数靠它`);
-    lines.push('图表格：1 小时按 5 分钟 · 24 小时按小时 · 7/30 天按天');
-  }
-  if (d.platform && d.platform.status === 'expired') {
-    lines.push('<span class="warn">平台会话过期</span> · 重取 userToken 可恢复');
-  } else if (d.platform && (d.platform.status === 'error' || d.platform.status === 'ratelimit')) {
-    lines.push('<span class="warn">平台接口异常</span> · 已退回本地差值');
-  }
-  lines.push(`时段：${F.isPeak('ds', Date.now()) ? '<b>高峰</b>' : '<b>空闲（半价）</b>'} · ${F.PERIOD_NOTE.ds}`);
-  lines.push(link('打开用量页 ›', DS_URL));
-  // 注意别用 class="row"：#panel .row 是 GLM 那两块的 flex 布局，会把说明排成两列
-  el.innerHTML = lines.map((l) => `<div>${l}</div>`).join('');
-  el.querySelectorAll('a').forEach((a) => {
-    a.onclick = (e) => {
+/** 胶囊列上的滚轮：多账户时循环切换该 provider 的当前账户（不想开菜单时的快手势） */
+function bindCapsuleWheel(s) {
+  const cap = $('#capsule');
+  cap.querySelectorAll('.cap-grp[data-pid]').forEach((col) => {
+    const pid = col.dataset.pid;
+    col.addEventListener('wheel', (e) => {
+      if (e.ctrlKey) return;
+      const prov = st && st.providers[pid];
+      if (!prov || prov.accounts.length < 2) return;
       e.preventDefault();
-      if (a.dataset.view === 'settings') { setViewLocal('settings'); api.setView('settings'); }
-      else if (a.dataset.url) api.openExternal(a.dataset.url);
-    };
+      cycleAccount(pid, e.deltaY > 0 ? 1 : -1);
+    }, { passive: false });
   });
 }
 
-/** 本地口径下没有按模型的拆分（那是平台账单才有的字段） */
-const modelsNeeded = () => false;
-
-function fmtTopModels(s, fmt) {
-  const list = (s.byModel || []).slice().sort((a, b) => b.cost - a.cost).slice(0, 3);
-  if (!list.length) return '—';
-  return list.map((m) => `${m.model} ${fmt(m.cost)}`).join(' · ');
+async function cycleAccount(pid, dir) {
+  const prov = st && st.providers[pid];
+  if (!prov || prov.accounts.length < 2) return;
+  const idx = prov.accounts.findIndex((a) => a.id === prov.activeId);
+  const next = prov.accounts[(idx + dir + prov.accounts.length) % prov.accounts.length];
+  window.GLMPUI.activate(pid, next.id);
 }
 
-function renderChart(range, cur) {
-  const host = $('#dsChart');
-  if (!host) return;
-  const s = dsOf().summary;
-  // 越近的区间柱子越细：1 小时 → 5 分钟一根，24 小时 → 1 小时一根，7/30 天 → 一天一根
-  const byTime = range === '1h' || range === '24h';
-  const series = range === '1h' ? ((s && s.fine) || [])
-    : range === '24h' ? ((s && s.hourly) || [])
-      : ((s && s.series) || []).slice(-(range === '30d' ? 30 : 7));
-  const sig = range + '|' + series.map((x) => (byTime ? (x.ts + ':' + x.spend.toFixed(2)) : (x.date + ':' + x.spend.toFixed(2)))).join(',');
-  if (sig === chartSig) return;      // 每秒重算时会走到这里，避免白重建 DOM
-  chartSig = sig;
-  host.querySelectorAll('i').forEach((b) => b.remove());   // 只清柱子：气泡是常驻的兄弟节点，别一起清掉
-  if (!series.length) return;
-  const max = Math.max.apply(null, series.map((x) => x.spend).concat([0.01]));
-  for (const pt of series) {
-    const bar = document.createElement('i');
-    // 有消费的最矮也给 3%，不然「有但很少」和「没有」看起来一样
-    bar.style.height = (pt.spend > 0 ? Math.max(3, Math.round((pt.spend / max) * 100)) : 2) + '%';
-    if (pt.spend <= 0) bar.className = 'zero';
-    if (pt.partial) bar.classList.add('partial');
-    bar.dataset.tip = byTime
-      ? `<b>${bucketRange(pt.ts, range)}</b> · ${money(pt.spend, cur)}${pt.partial ? ' <i>· 进行中</i>' : ''}`
-      : `<b>${pt.date}</b> · ${money(pt.spend, cur)}`;
-    host.appendChild(bar);
-  }
+/* ---------- 胶囊尺寸上报 ----------
+   卡片是 max-content（内容多大就多大），窗口尺寸以实测为准：加账户、余额位数变化、
+   账户名变长都不会再挤压出边框 —— 主进程那套按 meta.capsuleW 估宽的老办法撑不住这些。
+   只在整像素尺寸变化时上报，避免秒循环空转。 */
+let lastCapSize = '';
+function syncCapsuleSize() {
+  const el = $('#capsule');
+  if (!el || !api.capsuleSize) return;
+  const r = el.getBoundingClientRect();
+  if (!r.width || !r.height) return;    // 不在胶囊视图（display:none）时量不到
+  const w = Math.ceil(r.width), h = Math.ceil(r.height);
+  const sig = w + 'x' + h;
+  if (sig === lastCapSize) return;
+  lastCapSize = sig;
+  api.capsuleSize({ w, h });
 }
 
-/** 柱子覆盖的时间区间（5 分钟柱给 10:35–10:40，小时柱给 10:00–11:00） */
-function bucketRange(ts, range) {
-  const H = 3600e3;
-  const p = (x) => String(x).padStart(2, '0');
-  const hm = (t) => { const d = new Date(t); return `${p(d.getHours())}:${p(d.getMinutes())}`; };
-  if (range === '1h') return `${hm(ts)}–${hm(ts + 5 * 60000)}`;
-  if (range === '24h') return `${hm(ts)}–${hm(ts + H)}`;
-  return hm(ts);
+/* ---------- 面板尺寸上报 ----------
+   面板高度不再写死：渲染层量出「页头上两个页签里最高的那个 + 账户 chips 行 + 内边距」，
+   上报给主进程当窗口高。写死的高度在换字体/换系统时会差几个像素 —— 不是把 chips 行裁掉，
+   就是在最下面多出一截空白。两个页签取高者，所以切页签窗口仍然一个像素都不动。 */
+/** 页签区高度 = 两个页签里高的那个（CSS 让它们叠在同一个 grid 格子，容器自动取最大）。
+ *  纯读一个容器的尺寸，不碰任何页签的样式。 */
+function panesHeight() {
+  const el = $('#panes');
+  return el ? el.getBoundingClientRect().height : 0;
 }
 
-/** 时间轴标签：跨天时带上月-日，同一天只给时:分 */
-function timeLabel(ts) {
-  const d = new Date(ts);
-  const p = (x) => String(x).padStart(2, '0');
-  const hm = `${p(d.getHours())}:${p(d.getMinutes())}`;
-  const sameDay = new Date().toDateString() === d.toDateString();
-  return sameDay ? hm : `${p(d.getMonth() + 1)}-${p(d.getDate())} ${hm}`;
-}
-
-/* ---------- 倒计时 + 预期进度 + 超预期（每秒本地计算，不打扰网络） ---------- */
-function pacePercent(w) {
-  if (!w) return null;
-  const total = w.nextResetTime - w.windowStart;
-  if (!(total > 0)) return null;
-  return Math.max(1, Math.min(99, ((Date.now() - w.windowStart) / total) * 100));
-}
-
-/** 实际超出预期的幅度（百分点）；没开开关或没有窗口数据时返回 0 */
-function overOf(win, pace) {
-  if (!st || !st.config.paceAlert || !win || pace == null) return 0;
-  const over = win.percent - pace;
-  return over > 0.5 ? over : 0;   // 0.5 个百分点以内算噪声：刚开窗就报警会很吵
-}
-
-function updatePace() {
-  if (!st) return;
-  const g = glmOf();
-  const d = g.data;
-  const on = !!d && g.status === 'ok';
-  const p5 = on ? pacePercent(d.five) : null;
-  const pw = on ? pacePercent(d.week) : null;
-  const body = document.body;
-  body.style.setProperty('--pace5', p5 == null ? 0 : p5.toFixed(2));
-  body.style.setProperty('--paceW', pw == null ? 0 : pw.toFixed(2));
-
-  const o5 = on ? overOf(d.five, p5) : 0;
-  const oW = on ? overOf(d.week, pw) : 0;
-  body.style.setProperty('--over5', o5.toFixed(2));
-  body.style.setProperty('--overW', oW.toFixed(2));
-  body.dataset.pace = (o5 || oW) ? 'over' : 'ok';
-
-  // 「▲ 超预期」标签只挂在真正超支的那个窗口上
-  const blk5 = $('#panel .blk-q[data-win="five"]');
-  const blkW = $('#panel .blk-q[data-win="week"]');
-  if (blk5) blk5.classList.toggle('over', o5 > 0);
-  if (blkW) blkW.classList.toggle('over', oW > 0);
-
-  $$('#panel .pbar').forEach((bar) => {
-    const tip = bar.querySelector('.ptip');
-    if (!tip) return;
-    const isFive = !!bar.querySelector('.g5');
-    const pace = isFive ? p5 : pw;
-    const over = isFive ? o5 : oW;
-    const pct = isFive ? d.five.percent : d.week.percent;
-    if (pace == null) { tip.classList.remove('show'); return; }
-    const line = over > 0
-      ? `<span class="warn">超出预期 ${over.toFixed(1)} 个百分点</span>`
-      : '节奏正常';
-    tip.innerHTML = `预期 ≈ ${Math.round(pace)}% · 实际 ${pct}% · ${line}` +
-      '<small>幽灵段 = 按时间均摊，此刻应已用的量</small>' +
-      (over > 0 ? '<small>红色段 = 实际超出预期的那部分</small>' : '');
-    // 用气泡实际宽度钳制：translateX(-50%) 居中时完整留在 bar 内，左右都不出窗
-    const half = tip.offsetWidth / 2 + 2;
-    const pos = (pace / 100) * bar.clientWidth;
-    const left = Math.max(half, Math.min(bar.clientWidth - half, pos));
-    tip.style.left = left + 'px';
+/** 窗口尺寸变化后重新量一遍：切换视图的那一帧窗口还是旧尺寸（面板宽度会决定文字换行），
+ *  量出来的高度不作数 —— 等主进程把窗口调好后再量一次。 */
+let sizeReflow = 0;
+function onWindowResize() {
+  if (sizeReflow) return;
+  sizeReflow = requestAnimationFrame(() => {
+    sizeReflow = 0;
+    syncCapsuleSize();
+    syncPanelSize(true);
+    verifyPanelFit();
   });
 }
 
-let shownPeriod = { glm: '', ds: '' };
-function updatePeriodChips() {
-  if (!st) return;
-  for (const prov of ['glm', 'ds']) {
-    const peak = F.isPeak(prov, Date.now());
-    const key = peak ? 'peak' : 'off';
-    if (shownPeriod[prov] === key) continue;      // 每秒都会走到这，状态没变就别动 DOM
-    shownPeriod[prov] = key;
-    const chip = $(prov === 'glm' ? '#glmChip' : '#dsChip');
-    if (!chip) continue;
-    chip.className = 'chip ' + key;
-    chip.title = F.PERIOD_NOTE[prov] + (peak ? '\n当前：高峰时段' : '\n当前：空闲时段');
-    const txt = chip.querySelector('.ctxt');
-    if (txt) txt.textContent = peak ? '高峰时段' : (prov === 'ds' ? '空闲 · 半价' : '空闲时段');
-  }
+let lastPanelH = 0;
+/** 自愈补偿：一旦发现「按实测高度报上去、窗口也调好了，内容还是被裁」，就把差额记在这里，
+ *  之后每次上报都带上它。**只增不减** —— 减了会和窗口来回抖（报小 → 被裁 → 报大 → 装得下 → 又报小）。 */
+let healAsked = 0;
+
+/** 自检：面板内容真的装进卡片了吗？被裁就加码重报。
+ *  高度是「量出来再上报」的，这一层是兜底 —— 万一哪台机器上量短了（字体、缩放、极端数据），
+ *  用户看到的是「只剩上面几行、下面一片空白」，而不是默默被裁掉。 */
+function verifyPanelFit() {
+  if (!st || st.view !== 'panel' || !api.panelSize) return;
+  const host = $('#panel');
+  if (!host || host.getBoundingClientRect().width < 300) return;  // 换视图那一帧窗口还是别的尺寸，不算数
+  // 只有「窗口已经变成我上次要的高度」时才判定：否则只是窗口还没跟上，补了白补、还会越补越大
+  const pad = parseFloat(getComputedStyle(document.body).paddingTop) || 12;
+  if (Math.abs(window.innerHeight - (lastPanelH + pad * 2)) > 4) return;
+  const pane = host.querySelector('.pane.on');
+  const lastRow = pane && pane.lastElementChild;
+  if (!lastRow) return;
+  const cs = getComputedStyle(host);
+  const innerBottom = host.getBoundingClientRect().bottom
+    - parseFloat(cs.paddingBottom) - parseFloat(cs.borderBottomWidth);
+  const over = lastRow.getBoundingClientRect().bottom - innerBottom;
+  if (over <= 1.5) return;    // 装得下：什么都不做
+  healAsked += Math.ceil(over) + 2;
+  console.info(`GLM_APP panel 内容被裁 ${over.toFixed(1)}px → 高度补偿累计 ${healAsked}px`);
+  lastPanelH = 0;
+  syncPanelSize(true);
 }
 
-function tickCountdowns() {
-  if (!st) return;
-  updatePeriodChips();
-  const d = glmOf().data;
-  if (!d) return;
-  const now = Date.now();
-  $$('.cd5').forEach((e) => (e.textContent = F.fmtCountdown((d.five.nextResetTime ?? NaN) - now)));
-  $$('.cdw').forEach((e) => (e.textContent = F.fmtCountdown((d.week.nextResetTime ?? NaN) - now)));
-  updatePace();
+function syncPanelSize(force) {
+  if (!st || !api.panelSize) return;
+  const panel = $('#panel');
+  if (!panel) return;
+  const head = $('#panel .phead');
+  if (!head) return;
+  const headH = head.getBoundingClientRect().height;
+  if (!headH) return;    // 面板没显示（display:none）时量不到，等切过去再量
+  // 换视图那一帧窗口还是胶囊的尺寸：这时候的宽度会让文字换行、高度虚高，
+  // 报上去窗口会先跳一下再改回来。宽度不对就不量，等窗口调好（resize）再量。
+  if (panel.getBoundingClientRect().width < 300) return;
+  const row = $('#accRow');
+  const rowH = row && !row.hidden ? row.getBoundingClientRect().height : 0;
+  const tallest = panesHeight();
+  if (!tallest) return;
+  const cs = getComputedStyle($('#panel'));
+  const chromeH = parseFloat(cs.paddingTop) + parseFloat(cs.paddingBottom)
+    + parseFloat(cs.borderTopWidth) + parseFloat(cs.borderBottomWidth);
+  const need = Math.ceil(headH + rowH + tallest + chromeH) + healAsked;
+  if (need === lastPanelH && !force) return;
+  lastPanelH = need;
+  // 这行会进 main.log：出问题时一眼能看出是哪一段量少了（页头/chips/页签/内边距）
+  console.info(`GLM_APP panel 高度上报 ${need}px`
+    + `（页头 ${Math.round(headH)} + chips ${Math.round(rowH)} + 页签 ${Math.round(tallest)} + 内边距 ${Math.round(chromeH)}`
+    + (healAsked ? ` + 自愈补偿 ${healAsked}` : '') + '）');
+  api.panelSize({ h: need });
+}
+
+/* ---------- 面板视图 ---------- */
+function renderPanes(s) {
+  const host = $('#panes');
+  for (const [pid, w] of widgets) {
+    if (!w.pane.el.isConnected) host.appendChild(w.pane.el);
+  }
+  // 摘掉 provider 已被移除的 pane（删除账户到 0 个时，widgets 里已没有它）
+  host.querySelectorAll(':scope > .pane').forEach((p) => {
+    if (![...widgets.values()].some((w) => w.pane.el === p)) p.remove();
+  });
+  host.querySelectorAll(':scope > .pane').forEach((p) => {
+    const pidOf = [...widgets.entries()].find(([, w]) => w.pane.el === p);
+    p.classList.toggle('on', !!pidOf && pidOf[0] === s.config.panelTab);
+  });
+  for (const pid of providerIds(s)) {
+    const w = widgets.get(pid);
+    if (!w) continue;
+    const ctx = paneCtx(s, pid, pid === s.config.panelTab);
+    w.pane.update(ctx);
+    const acc = ctx.acc;
+    w.pane.el.classList.toggle('acc-expired', !!(acc && acc.status === 'expired'));
+  }
+  syncPanelSize();
+  verifyPanelFit();
 }
 
 /* ---------- 设置页 ---------- */
-/** 高频采样关掉时，下面那行间隔置灰不可点（避免「设了 2 分钟却没生效」的困惑） */
-function setFastRow(on) {
-  const sel = $('#dspoll');
-  if (sel) sel.disabled = !on;
-  const row = $('#dsfastrow');
-  if (row) row.classList.toggle('off', !on);
+function settingsStructureSig(s) {
+  return JSON.stringify([
+    providerIds(s),
+    s.config.accounts.map((a) => [a.id, a.provider, a.name, a.enabled, Object.entries(a.creds).map(([k, c]) => [k, c.set, c.tail])]),
+    Object.keys(window.GLMPROV.list.map((p) => p.id)).length,
+  ]);
+}
+
+function applySettings(s) {
+  if (s.view !== 'settings') return;
+  const host = $('#provSecs');
+  // 编辑态：表单开着时不动 DOM；render 内部按 renderRequest 决定「打开/关闭表单」那一拍是否重建
+  if (window.GLMPSETTINGS.isEditing()) {
+    if (window.GLMPSETTINGS.render(host, s)) {
+      bindDynamicControls();
+      if (clipCache) window.GLMPSETTINGS.peek(host, clipCache);   // 重建后重放剪贴板提示
+    }
+    return;
+  }
+  const sig = settingsStructureSig(s);
+  // 结构变了必须重建（优先级高于焦点守卫：关表单后焦点还留在按钮上，不能因此卡住不重绘）
+  if (sig !== settingsSig) {
+    settingsSig = sig;
+    window.GLMPSETTINGS.render(host, s);
+    bindDynamicControls();
+    if (clipCache) window.GLMPSETTINGS.peek(host, clipCache);
+    fillStaticSettings(s);
+    return;
+  }
+  // 正在输入（焦点在设置页）：只回填状态词/勾选，不重建（免得打字被打断）
+  if (document.activeElement && $('#settings').contains(document.activeElement)) {
+    window.GLMPSETTINGS.fill(host, s);
+    return;
+  }
+  window.GLMPSETTINGS.fill(host, s);
+  if (clipCache) window.GLMPSETTINGS.peek(host, clipCache);
+  fillStaticSettings(s);
+}
+
+/** 设置页动态区里的全局控件（配额提醒 / 高频采样）：change 即落盘 */
+function bindDynamicControls() {
+  const on = (sel, fn) => { const el = $(sel); if (el) el.addEventListener('change', fn); };
+  on('#pacealert', () => autoSave({ paceAlert: $('#pacealert').checked }));
+  on('#nreset', () => autoSave({ notifyReset: $('#nreset').checked }));
+  const poll = () => {
+    const fast = $('#dsfast');
+    const sel = $('#dspoll');
+    if (sel) sel.disabled = !fast.checked;
+    const row = $('#dsfastrow');
+    if (row) row.classList.toggle('off', !fast.checked);
+    autoSave({ dsPollMin: fast.checked ? parseInt(sel.value, 10) : 0 });
+  };
+  on('#dsfast', poll);
+  on('#dspoll', poll);
+}
+
+/** 通用段（静态 HTML）：值回填 */
+function fillStaticSettings(s) {
+  const c = s.config;
+  const interval = $('#interval');
+  if (interval && document.activeElement !== interval) interval.value = String(c.intervalMin);
+  const theme = $('#theme');
+  if (theme && document.activeElement !== theme) theme.value = c.theme || 'auto';
+  // 胶囊布局：只有「某家配了多个账户」才有意义，单账户用户不必看见这一项
+  const layout = $('#caplayout');
+  if (layout) {
+    if (document.activeElement !== layout) layout.value = c.capsuleLayout === 'all' ? 'all' : 'switch';
+    const multi = Object.values(s.providers || {}).some((p) => p.accounts.length > 1);
+    $('#caplayoutWrap').hidden = !multi;
+    $('#caplayoutHint').hidden = !multi;
+  }
+  const autostart = $('#autostart');
+  autostart.checked = !!c.autoStart && !c.isPortable;
+  autostart.disabled = !!c.isPortable;
+  autostart.parentElement.title = c.isPortable ? '便携版不支持开机自启，请使用安装版' : '';
+  $('#ontop').checked = !!c.alwaysOnTop;
 }
 
 /** 即时保存的可见反馈：不提示的话用户不知道已经生效了 */
@@ -434,8 +501,9 @@ function flashSaved() {
   clearTimeout(saveTipTimer);
   saveTipTimer = setTimeout(() => el.classList.remove('show'), 1400);
 }
+window.GLMPUI.flashSaved = flashSaved;
 
-/** 勾选 / 下拉类：change 即落盘，不用等「保存并刷新」（凭据输入框仍然要显式保存） */
+/** 勾选 / 下拉类：change 即落盘，不用等「保存并刷新」（凭据在各家表单里显式保存） */
 async function autoSave(patch, after) {
   const next = await api.save(patch);
   if (after) after();
@@ -445,132 +513,36 @@ async function autoSave(patch, after) {
 
 function bindAutoSave() {
   const on = (sel, fn) => { const el = $(sel); if (el) el.addEventListener('change', fn); };
-  on('#pacealert', () => autoSave({ paceAlert: $('#pacealert').checked }));
-  on('#nreset', () => autoSave({ notifyReset: $('#nreset').checked }));
   on('#autostart', () => autoSave({ autoStart: $('#autostart').checked }));
   on('#ontop', () => autoSave({ alwaysOnTop: $('#ontop').checked }));
   on('#theme', () => autoSave({ theme: $('#theme').value }));
   on('#interval', () => autoSave({ intervalMin: parseInt($('#interval').value, 10) }));
-  const poll = () => autoSave({ dsPollMin: $('#dsfast').checked ? parseInt($('#dspoll').value, 10) : 0 });
-  // 勾选框既要落盘，也要立刻把下面那行间隔置灰/解灰
-  on('#dsfast', () => { setFastRow($('#dsfast').checked); poll(); });
-  on('#dspoll', poll);
+  on('#caplayout', () => autoSave({ capsuleLayout: $('#caplayout').value }));
 }
 
-function setStat(boxSel, txtSel, cls, text) {
-  const box = $(boxSel), txt = $(txtSel);
-  if (!box || !txt) return;
-  box.className = 'tstat ' + cls;
-  txt.textContent = text;
-}
-
-function fillSettings() {
-  if (!st) return;
-  const editing = document.activeElement && $('#settings').contains(document.activeElement);
-  if (editing) return; // 用户正在填，别覆盖
-
-  const c = st.config;
-  if (!tokDirty) {
-    $('#tok').value = '';
-    $('#tok').placeholder = c.hasToken
-      ? `已保存 ·…${c.tokenTail}（粘贴新值可替换）`
-      : '粘贴 API Key（推荐，长期有效），或整段 Cookie / bigmodel_token_production 的值';
-  }
-  if (!dsTokDirty) {
-    $('#dstok').value = '';
-    $('#dstok').placeholder = c.dsHasToken
-      ? `已保存 ·…${c.dsTokenTail}（粘贴新值可替换）`
-      : '粘贴 sk- 开头的 API Key，形如 sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx';
-  }
-  if (!dsPlatDirty) {
-    $('#dsplat').value = '';
-    $('#dsplat').placeholder = c.dsHasPlatform
-      ? `已保存 ·…${c.dsPlatformTail}（粘贴新值可替换）`
-      : '粘贴 platform.deepseek.com 的 userToken（整段 JSON 或裸 token 都可以）';
-  }
-  $('#interval').value = String(c.intervalMin);
-  const poll = Number(c.dsPollMin) || 0;
-  $('#dsfast').checked = poll > 0;
-  $('#dspoll').value = String(poll > 0 ? poll : 2);
-  setFastRow(poll > 0);
-  $('#threshold').value = String(c.warnThreshold);
-  $('#pacealert').checked = !!c.paceAlert;
-  $('#theme').value = c.theme || 'auto';
-  $('#autostart').checked = !!c.autoStart && !c.isPortable;
-  $('#autostart').disabled = !!c.isPortable;
-  $('#autostart').parentElement.title = c.isPortable ? '便携版不支持开机自启，请使用安装版' : '';
-  $('#ontop').checked = !!c.alwaysOnTop;
-  $('#nreset').checked = !!c.notifyReset;
-
-  const g = glmOf(), d = dsOf();
-  setStat('#tstat', '#tstatTxt', { ok: 'ok', expired: 'bad', empty: 'na' }[g.status] || 'na', {
-    ok: g.lastFetchAt ? `✓ Token 有效 · ${hhmm(g.lastFetchAt)} 验证通过` : '✓ Token 有效',
-    expired: '⚠ Token 已失效，粘贴新值后保存',
-    empty: '未配置',
-  }[g.status] || '待验证…');
-
-  setStat('#dststat', '#dststatTxt', { ok: 'ok', expired: 'bad', empty: 'na' }[d.status] || 'na', {
-    ok: d.balance ? `✓ 余额 ${money(d.balance.total, d.balance.currency)}${d.balance.available ? '' : ' · 余额不足'}` : '✓ API Key 有效',
-    expired: '⚠ API Key 已失效或已撤销，粘贴新值后保存',
-    ratelimit: '⚠ 触发限流，稍后自动重试',
-    error: '⚠ 更新失败，稍后自动重试',
-    empty: '未配置',
-  }[d.status] || '待验证…');
-
-  const ps = d.platform ? d.platform.status : 'empty';
-  setStat('#dspstat', '#dspstatTxt', { ok: 'ok', expired: 'bad', empty: 'na' }[ps] || 'bad', {
-    ok: '✓ 会话有效 · 精确账单与逐模型用量已启用',
-    expired: '⚠ 平台会话已过期，重新获取 userToken 后粘贴保存',
-    ratelimit: '⚠ 平台接口限流，稍后自动重试',
-    error: '⚠ 平台接口异常，已退回本地余额差值',
-    empty: '未配置 · 消费数字走本地余额差值推算',
-  }[ps] || '待验证…');
-}
-
-/** 剪贴板里如果有某种凭据，给对应的输入框一个「一键填入」提示 */
+/** 剪贴板里如果有某种凭据，给对应输入框一个「一键填入」提示 */
 async function peekClipboard() {
   let r = null;
   try { r = await api.clipboardPeek(); } catch { /* 读剪贴板失败：静默 */ }
-  const c = st ? st.config : {};
-  const bind = (chipSel, inputSel, val, dirtySetter, differs) => {
-    const chip = $(chipSel);
-    if (!chip) return;
-    if (val && differs) {
-      chip.classList.add('show');
-      chip.onclick = () => {
-        $(inputSel).value = val;
-        dirtySetter();
-        chip.classList.remove('show');
-        $(inputSel).focus();
-      };
-    } else chip.classList.remove('show');
-  };
-  const obj = r && typeof r === 'object' ? r : { glm: typeof r === 'string' ? r : '' };
-  bind('#clipchip', '#tok', obj.glm, () => { tokDirty = true; }, obj.glm && obj.glm !== c.tokenTail);
-  bind('#clipchipDs', '#dstok', obj.ds, () => { dsTokDirty = true; }, obj.ds && obj.ds !== c.dsTokenTail);
+  clipCache = r;
+  if (!window.GLMPSETTINGS.isEditing()) window.GLMPSETTINGS.peek($('#provSecs'), r);
 }
 
 async function saveSettings() {
   const patch = {
     intervalMin: parseInt($('#interval').value, 10),
-    dsPollMin: $('#dsfast').checked ? parseInt($('#dspoll').value, 10) : 0,
-    warnThreshold: parseInt($('#threshold').value, 10),
-    paceAlert: $('#pacealert').checked,
-    notifyReset: $('#nreset').checked,
+    warnThreshold: parseInt(($('#threshold') || {}).value ?? 80, 10),
+    paceAlert: $('#pacealert') ? $('#pacealert').checked : true,
+    notifyReset: $('#nreset') ? $('#nreset').checked : false,
     autoStart: $('#autostart').checked,
     alwaysOnTop: $('#ontop').checked,
     theme: $('#theme').value,
   };
-  if (tokDirty) patch.token = $('#tok').value.trim();
-  if (dsTokDirty) patch.dsToken = $('#dstok').value.trim();
-  if (dsPlatDirty) patch.dsPlatformToken = $('#dsplat').value.trim();
   // 用返回的新状态渲染（别等广播，避免「配完了界面还是旧的」的竞态）
   const next = await api.save(patch);
-  tokDirty = dsTokDirty = dsPlatDirty = false;
   if (next) applyState(next);
   flashSaved();
-  const cfg = (next && next.config) || (st && st.config) || {};
-  if (cfg.hasToken || cfg.dsHasToken) api.setView('panel');
+  if (providerIds(next || st).length) api.setView('panel');
 }
 
 /* ---------- 托盘动态图标（32px 画布 → dataURL → 主进程） ---------- */
@@ -582,16 +554,16 @@ function drawTray() {
   g.beginPath();
   g.roundRect ? g.roundRect(1, 1, 30, 30, 8) : g.rect(1, 1, 30, 30);
   g.fill();
-  const glm = glmOf();
-  const hasGlm = !!(st && st.config && st.config.hasToken);
-  const expired = glm.status === 'expired';
-  const tier = (glm.data && glm.status === 'ok')
-    ? F.tierOfPair(glm.data.five.percent, glm.data.week.percent, st.config.warnThreshold)
-    : expired || (dsOf().status === 'expired') ? 'high' : 'low';
+  const tier = (st && st.worstTier) || 'low';
   const color = { low: '#22d3ee', mid: '#fbbf24', high: '#f87171' }[tier];
-  // 有 GLM 就画 5h 占用环；只配了 DeepSeek 时画一个实心点，不做无意义的 0% 环
-  if (hasGlm) {
-    const p = expired ? 100 : (glm.data ? glm.data.five.percent : 0);
+  // 档位型 provider（配额概念）画占用环；只有余额型 provider 时画实心点
+  const ringPid = st ? providerIds(st).find((pid) => {
+    const meta = PROV.byId(pid);
+    return meta && meta.accentMode === 'tier';
+  }) : null;
+  const ringAcc = ringPid ? activeAccOf(st, ringPid) : null;
+  if (ringAcc) {
+    const p = ringAcc.status === 'expired' ? 100 : (ringAcc.data ? ringAcc.data.five.percent : 0);
     g.strokeStyle = 'rgba(255,255,255,.12)';
     g.lineWidth = 4.5;
     g.beginPath(); g.arc(16, 16, 10.5, 0, Math.PI * 2); g.stroke();
@@ -628,13 +600,13 @@ function dragListeners(on) {
   fn('blur', onDragFinish);
 }
 
-function makeDraggable(el, onTap) {
-  el.addEventListener('pointerdown', (e) => {
-    if (!el || e.button !== 0 || e.target.closest('button, a, select, textarea, input, label, summary, .clipchip, .ds-bal, .ds-more')) return;
+function makeDraggable(elRoot, onTap) {
+  elRoot.addEventListener('pointerdown', (e) => {
+    if (!elRoot || e.button !== 0 || e.target.closest('button, a, select, textarea, input, label, summary, .clipchip, .ds-bal, .ds-more, .acc-chip')) return;
     if (drag) return;
     drag = { moved: false };
     pending.gx = e.screenX; pending.gy = e.screenY; pending.onTap = onTap;
-    try { el.setPointerCapture(e.pointerId); } catch { }
+    try { elRoot.setPointerCapture(e.pointerId); } catch { }
     e.preventDefault();
     // 把锚点先交给主进程：光标滑出窗口矩形后就收不到 pointermove 了，靠主进程自己采样
     api.dragStart(e.screenX, e.screenY);
@@ -661,35 +633,38 @@ function onDragFinish() {
   }
 }
 
-function hideDsDetail() {
-  const el = $('#dsSrc');
-  if (el && !el.hidden) { el.hidden = true; $('#dsInfo').classList.remove('on'); }
-}
-
-/** 切换图表区间：本地先切（不卡手），主进程落盘后广播会对齐 */
-function setRange(r) {
-  if (st && st.config) st.config.dsRange = r;
-  chartSig = '';
-  renderDsPanel();
-  api.save({ dsRange: r });
-}
-
-function expandTarget() {
-  const g = glmOf();
-  if (g.status === 'expired' || (st && !st.config.hasToken && !st.config.dsHasToken)) return 'settings';
-  return 'panel';
-}
-
-/* 乐观先行切换视图：不等主进程回包，点击瞬间内容就变（主进程广播稍后对齐） */
+/** 乐观先行切换视图：不等主进程回包，点击瞬间内容就变（主进程广播稍后对齐） */
 function setViewLocal(v) {
   document.body.classList.remove('view-capsule', 'view-panel', 'view-settings');
   document.body.classList.add('view-' + v);
+  // 换视图前先把实测尺寸递过去：主进程 setView 时就能按正确的宽/高重排，省掉可见的尺寸跳变
+  if (v === 'capsule') syncCapsuleSize();
+  if (v === 'panel') syncPanelSize();
 }
 
-function setTabLocal(t) {
-  document.body.classList.remove('tab-glm', 'tab-ds');
-  document.body.classList.add('tab-' + t);
-  if (st && st.config) st.config.panelTab = t;
+function expandTarget() {
+  if (!st || !providerIds(st).length) return 'settings';
+  // 当前展示的账户里有凭据失效的 → 直达设置（和旧版「Token 失效点胶囊进设置」一致）
+  const expired = providerIds(st).some((pid) => {
+    const acc = activeAccOf(st, pid);
+    return acc && acc.status === 'expired';
+  });
+  return expired ? 'settings' : 'panel';
+}
+
+/* ---------- 每秒：各 pane 的倒计时/配速 ---------- */
+function tickPanes() {
+  if (!st) return;
+  for (const pid of providerIds(st)) {
+    const w = widgets.get(pid);
+    if (w && w.pane.tick) w.pane.tick(paneCtx(st, pid, pid === st.config.panelTab));
+  }
+  // 胶囊列的幽灵/亮线也随秒走
+  for (const pid of providerIds(st)) {
+    const w = widgets.get(pid);
+    if (w) w.capsule.update(paneCtx(st, pid, false));
+  }
+  syncCapsuleSize();
 }
 
 function bind() {
@@ -706,79 +681,13 @@ function bind() {
   $('#fixBtn').addEventListener('click', () => { setViewLocal('settings'); api.setView('settings'); });
   $('#retryBtn').addEventListener('click', refresh);
   $('#backBtn').addEventListener('click', () => {
-    const v = glmOf().data || st.config.dsHasToken ? 'panel' : 'capsule';
+    const v = st && providerIds(st).length ? 'panel' : 'capsule';
     setViewLocal(v); api.setView(v);
   });
-  $('#webBtn').addEventListener('click', (e) => { e.preventDefault(); api.openExternal(OVERVIEW_URL); });
-  $('#dsWebBtn').addEventListener('click', (e) => { e.preventDefault(); api.openExternal(DS_URL); });
   $('#saveBtn').addEventListener('click', saveSettings);
   $('#saveBtn2').addEventListener('click', saveSettings);
 
-  // 面板页签
-  $('#tabGlm').addEventListener('click', (e) => { e.stopPropagation(); hideDsDetail(); setTabLocal('glm'); api.setTab('glm'); });
-  $('#tabDs').addEventListener('click', (e) => { e.stopPropagation(); setTabLocal('ds'); api.setTab('ds'); });
-
-  // 金额打码：点一下就显示（只在内存里，重启回到打码态）
   bindAutoSave();
-  $('#dsBal').addEventListener('click', (e) => {
-    e.stopPropagation();
-    dsReveal = !dsReveal;
-    renderDsPanel();
-  });
-  // 图表区间：24 小时 / 7 天 / 30 天
-  $('#dsR1').addEventListener('click', (e) => { e.stopPropagation(); setRange('1h'); });
-  $('#dsR24').addEventListener('click', (e) => { e.stopPropagation(); setRange('24h'); });
-  $('#dsR7').addEventListener('click', (e) => { e.stopPropagation(); setRange('7d'); });
-  $('#dsR30').addEventListener('click', (e) => { e.stopPropagation(); setRange('30d'); });
-  // 「?」详情浮层
-  $('#dsInfo').addEventListener('click', (e) => {
-    e.stopPropagation();
-    const el = $('#dsSrc');
-    el.hidden = !el.hidden;
-    $('#dsInfo').classList.toggle('on', !el.hidden);
-  });
-
-  $('#clrBtn').addEventListener('click', async () => {
-    await api.save({ token: '' });
-    tokDirty = false; $('#tok').value = '';
-  });
-  $('#clrDsBtn').addEventListener('click', async () => {
-    await api.save({ dsToken: '' });
-    dsTokDirty = false; $('#dstok').value = '';
-  });
-  $('#clrDsPlatBtn').addEventListener('click', async () => {
-    await api.save({ dsPlatformToken: '' });
-    dsPlatDirty = false; $('#dsplat').value = '';
-  });
-  $('#tok').addEventListener('input', () => { tokDirty = true; $('#clipchip').classList.remove('show'); });
-  $('#dstok').addEventListener('input', () => { dsTokDirty = true; $('#clipchipDs').classList.remove('show'); });
-  $('#dsplat').addEventListener('input', () => { dsPlatDirty = true; });
-
-  // DeepSeek 柱状图悬停：显示该柱覆盖的时间区间与费用（与 GLM 的进度条气泡同一套观感）
-  const chart = $('#dsChart');
-  const tip = $('#dsTip');
-  const hideTip = () => tip && tip.classList.remove('show');
-  if (chart && tip) {
-    chart.addEventListener('pointermove', (e) => {
-      const bar = e.target.closest('i');
-      if (!bar || !bar.dataset.tip) { hideTip(); return; }
-      tip.innerHTML = bar.dataset.tip;
-      // 用气泡实宽钳制：左右都不出面板
-      const half = tip.offsetWidth / 2 + 2;
-      const pos = bar.offsetLeft + bar.offsetWidth / 2;
-      tip.style.left = Math.max(half, Math.min(chart.clientWidth - half, pos)) + 'px';
-      tip.classList.add('show');
-    });
-    chart.addEventListener('pointerleave', hideTip);
-  }
-
-  // 悬停进度条 → 显示预期解释（绑在整根 bar 上：用量条盖住幽灵时幽灵收不到事件）
-  $$('#panel .pbar').forEach((bar) => {
-    const tip = bar.querySelector('.ptip');
-    if (!tip) return;
-    bar.addEventListener('pointerenter', () => tip.classList.add('show'));
-    bar.addEventListener('pointerleave', () => tip.classList.remove('show'));
-  });
 
   window.addEventListener('keydown', (e) => {
     if (e.key === 'Escape' && st && st.view !== 'capsule') { setViewLocal('capsule'); api.setView('capsule'); }
@@ -795,7 +704,8 @@ function bind() {
     const next = Math.min(1.6, Math.max(0.8, Math.round((cur + (e.deltaY < 0 ? 0.05 : -0.05)) * 20) / 20));
     if (next !== cur) api.setZoom(next);
   }, { passive: false });
-  setInterval(tickCountdowns, 1000);
+  setInterval(tickPanes, 1000);
+  window.addEventListener('resize', onWindowResize);
 }
 
 /* ---------- 启动 ---------- */
@@ -804,6 +714,6 @@ function bind() {
   api.onState(applyState); // 先订阅再取状态，避免漏掉推送
   applyState(await api.getState());
   api.ready();
-  console.info('GLM_APP booted · view=' + (st && st.view) + ' glm=' + glmOf().status
-    + ' ds=' + dsOf().status + ' data=' + !!(glmOf().data));
+  console.info('GLM_APP booted · view=' + (st && st.view)
+    + ' providers=' + (st ? providerIds(st).join('+') : 'none'));
 })();

@@ -6,12 +6,9 @@ const {
 const path = require('path');
 const fs = require('fs');
 const net = require('electron').net;
-const { extractToken, fetchUsage } = require('./lib/usage');
-const {
-  extractDsToken, extractPlatformToken, fetchBalance, fetchMonthlyCost, fetchMonthlyAmount,
-} = require('./lib/deepseek');
-const dsHistory = require('./lib/ds-history');
-const { tierOf, levelName, fmtResetTime, fmtPoints, fmtMoney, normWarn } = require('./lib/format');
+const providers = require('./lib/providers');
+const dsHistoryLib = require('./lib/ds-history');
+const { levelName, fmtResetTime, fmtMoney, normWarn } = require('./lib/format');
 const drag = require('./lib/drag');
 
 const OVERVIEW_URL = 'https://www.bigmodel.cn/coding-plan/personal/overview';
@@ -45,9 +42,13 @@ function log() {
 process.on('uncaughtException', (e) => log('FATAL uncaughtException:', e));
 process.on('unhandledRejection', (e) => log('FATAL unhandledRejection:', e));
 
-/* ---------------- 配置 ---------------- */
+/* ---------------- 配置 ----------------
+ * 账户是一等实体：config.accounts[] 每项 = 一家云的一个账号。
+ * provider 的凭据字段由 lib/providers/meta.js 声明（glm: token；deepseek: apiKey + platformToken）。
+ * 全局设置不随账户重复；提醒去重（alertState）与重启秒显快照（snapshot）都挂在账户维度。 */
 const DEFAULTS = {
-  token: '',
+  accounts: [],         // [{ id, provider, name, enabled, credentials:{…}, alertState:{…} }]
+  active: {},           // { [providerId]: accountId } 胶囊/面板当前展示的账户
   intervalMin: 10,      // 0 = 仅手动
   warnThreshold: 80,    // 提醒阈值（%）：同时决定变色档位与系统通知，1–99
   paceAlert: true,      // 实际用量超过预期进度时变色提醒
@@ -57,37 +58,71 @@ const DEFAULTS = {
   zoom: 1,             // 展开态缩放（0.8–1.6，Ctrl+滚轮），胶囊不缩放
   theme: 'auto',       // auto=跟随背景明暗 | dark | light
   view: 'capsule',      // capsule | panel | settings
-  panelTab: 'glm',      // glm | ds（展开面板当前视图）
+  panelTab: 'glm',      // 展开面板当前 provider 页签（值 = provider id）
+  capsuleLayout: 'switch', // switch=每家只显示当前账户（点账户标签切换）| all=每个账户各占一格
   pos: null,            // {x,y} 胶囊左上角
-  lastData: null,       // 最近一次成功数据（重启秒显）
-  lastNotifiedWindowStart: 0,   // 5h 窗口提醒去重（存 windowStart）
-  lastNotifiedWeekStart: 0,     // 周窗口提醒去重（同上）
+  snapshot: {},         // { [accountId]: 最近一次成功 data }（重启秒显）
+  dsRange: '7d',        // DeepSeek 面板图表区间：1h | 24h | 7d | 30d
+  dsPollMin: 2,         // 余额高频采样间隔（分钟，0=关闭）：实时读数的分辨率就是它
 };
-// DeepSeek 相关（凭证与缓存）：与 GLM 的 token 分开，缺失即视为未启用
-const DS_DEFAULTS = {
-  dsToken: '',          // 官方 API Key（sk-…），长期有效 → 余额
-  dsPlatformToken: '',  // 平台 userToken（选配，短命）→ 精确账单
-  dsRange: '7d',        // 面板图表区间：1h | 24h | 7d | 30d
-  dsPollMin: 2,         // 余额单独轮询间隔（分钟，0=关闭）：实时读数的分辨率就是它
-  lastDs: null,         // 最近一次成功的 DeepSeek 快照（重启秒显）
-};
-const ALL_DEFAULTS = { ...DEFAULTS, ...DS_DEFAULTS };
-let config = { ...ALL_DEFAULTS };
+let config = { ...DEFAULTS };
+let migrated = false;   // 本次启动做了旧配置迁移（启动后立即写回，避免半迁移状态滞留）
 const CONFIG_PATH = () => path.join(app.getPath('userData'), 'config.json');
+
+/** 旧平铺配置 → accounts[] 的确定性 id（ds 差值历史迁移要挂到同一个 id 上） */
+const MIGRATE_GLM_ID = 'glm0';
+const MIGRATE_DS_ID = 'ds0';
+
+function mkAccount(provider, id, name, credentials) {
+  return { id, provider, name, enabled: true, credentials, alertState: {} };
+}
 
 function loadConfig() {
   try {
     const raw = JSON.parse(fs.readFileSync(CONFIG_PATH(), 'utf8'));
-    // 旧配置迁移：notifyThreshold 时代 0 = 关闭通知，现在阈值只管高低
+    const wasFlat = !Array.isArray(raw.accounts);   // 平铺格式（迁移前）——置位要在迁移动手之前
+    // 旧配置迁移 ①：notifyThreshold 时代 0 = 关闭通知，现在阈值只管高低
     if (raw.notifyThreshold != null && raw.warnThreshold == null) {
       const old = Number(raw.notifyThreshold);
       raw.warnThreshold = old === 0 ? 99 : old;
     }
     delete raw.notifyThreshold;
-    // dsDays 时代只有 7/30 两档，换成带 1 小时 / 24 小时的四档区间
+    // 旧配置迁移 ②：dsDays 时代只有 7/30 两档，换成带 1 小时 / 24 小时的四档区间
     if (raw.dsDays != null && raw.dsRange == null) raw.dsRange = Number(raw.dsDays) === 30 ? '30d' : '7d';
     delete raw.dsDays;
-    config = { ...ALL_DEFAULTS, ...raw };
+    // 旧配置迁移 ③：平铺单凭据 → accounts[]（老用户升级路径，必须幂等）
+    if (!Array.isArray(raw.accounts)) {
+      raw.accounts = [];
+      if (raw.token) raw.accounts.push(mkAccount('glm', MIGRATE_GLM_ID, 'GLM', { token: raw.token }));
+      if (raw.dsToken) {
+        raw.accounts.push(mkAccount('deepseek', MIGRATE_DS_ID, 'DeepSeek', {
+          apiKey: raw.dsToken, platformToken: raw.dsPlatformToken || '',
+        }));
+      }
+      raw.snapshot = {};
+      if (raw.lastData && raw.accounts[0]) raw.snapshot[raw.accounts[0].id] = raw.lastData;
+      const dsAcc = raw.accounts.find((a) => a.provider === 'deepseek');
+      if (raw.lastDs && dsAcc) raw.snapshot[dsAcc.id] = raw.lastDs;
+      // 提醒去重状态迁到账户维度
+      if (raw.lastNotifiedWindowStart != null) {
+        const g = raw.accounts.find((a) => a.provider === 'glm');
+        if (g) g.alertState = { five: raw.lastNotifiedWindowStart || 0, week: raw.lastNotifiedWeekStart || 0 };
+      }
+    }
+    for (const k of ['token', 'dsToken', 'dsPlatformToken', 'lastData', 'lastDs', 'lastNotifiedWindowStart', 'lastNotifiedWeekStart']) delete raw[k];
+    config = { ...DEFAULTS, ...raw };
+    // 账户结构兜底：缺字段补齐，未知 provider 剔除（实现被裁掉的升级场景）
+    config.accounts = (config.accounts || []).filter((a) => a && providers.byId(a.provider)).map((a) => ({
+      id: String(a.id || ''), provider: a.provider, name: String(a.name || ''), enabled: a.enabled !== false,
+      credentials: a.credentials || {}, alertState: a.alertState || {},
+    }));
+    // active 指向失效/缺失时回填第一个启用的账户（迁移后必为空 → 这里一次性补齐）
+    for (const p of providers.list) {
+      const list = config.accounts.filter((a) => a.provider === p.id && a.enabled !== false);
+      if (!list.length) continue;
+      if (!list.some((a) => a.id === config.active[p.id])) config.active[p.id] = list[0].id;
+    }
+    if (wasFlat) migrated = true;   // 迁移结果尽快写回磁盘
   } catch { /* 首次运行 */ }
 }
 function saveConfig() {
@@ -100,103 +135,135 @@ let win = null;
 let tray = null;
 let timer = null;
 let fetching = false;
-let lastFetchAt = 0;
 let lastManualAt = 0;
-let backoffUntil = 0;
 let menuOpen = false;
 let rendererReady = false;
 let hasAcrylic = false;
-let prevData = null;          // 内存中上一次数据（判断窗口滚动）
-let expiredNotified = false;
 let resolvedTheme = 'dark';   // 实际生效主题（auto 时由截屏采样决定）
 let dragCtx = null;           // 拖拽上下文：{ ctx, pending, timer, idle, lastX, lastY } —— 见 bindIpc
 let dragDiag = false;         // 下次采样时打一条坐标系诊断日志（排障用，一次即止）
 let dragging = false;         // 拖拽进行中：看门狗静默、主题巡逻暂停
 let themeDebounce = 0;
-let lastParseRetryAt = 0;     // 解析失败自动重试的节流
+let dsTimer = null;           // 余额类高频轮询的定时器
+let dsPolling = false;        // 轮询进行中（避免与主周期叠加）
 
-const status = { kind: 'boot', msg: '' }; // boot|loading|ok|expired|ratelimit|error|empty
+/** 按账户的运行态：状态机、最近数据、provider 草稿（mem）、解析重试节流 */
+const rt = new Map();
+function rtOf(acc) {
+  if (!rt.has(acc.id)) rt.set(acc.id, { status: 'boot', msg: '', lastFetchAt: 0, data: null, mem: { notified: {} }, backoffUntil: 0, parseRetryAt: 0 });
+  return rt.get(acc.id);
+}
+const getAcc = (id) => config.accounts.find((a) => a.id === id) || null;
+const enabledOf = (pid) => config.accounts.filter((a) => a.provider === pid && a.enabled !== false);
 
-/* ---------------- DeepSeek 运行态 ----------------
-   两条链路各自记状态：余额（API Key，长期有效）与平台账单（userToken，短命、选配）。
-   平台链路挂掉只降级「精确账单」，余额与本地差值口径照常工作。 */
-const ds = {
-  status: 'empty',      // empty|loading|ok|expired|ratelimit|error
-  msg: '',
-  lastFetchAt: 0,
-  balance: null,        // fetchBalance().data
-  pStatus: 'empty',     // 平台账单链路
-  pMsg: '',
-  pLastFetchAt: 0,
-  costMonths: null,     // [本月, 上月] 的 fetchMonthlyCost().data
-  amount: null,         // fetchMonthlyAmount().data
-  summary: null,        // summarize()/summarizePlatform() 结果，供面板直接渲染
-};
-let dsSamples = [];            // 余额样本 [[ts, 余额], …]
-let dsExpiredNotified = false;
-let dsPlatformExpiredNotified = false;
-let dsTimer = null;            // 余额单独轮询的定时器
-let dsPolling = false;         // 余额轮询进行中（避免与主周期叠加）
+/** DeepSeek 差值历史（按账户分桶）：Map<accountId, samples[]>，落盘为 {[id]: […]} */
+const dsSamples = new Map();
 const DS_HISTORY_PATH = () => path.join(app.getPath('userData'), 'ds-history.json');
+
+function sanitizeSamples(arr) {
+  return (Array.isArray(arr) ? arr : [])
+    .filter((p) => Array.isArray(p) && p.length >= 2)
+    .map(([t, b]) => [Number(t), Number(b)])
+    .filter(([t, b]) => Number.isFinite(t) && Number.isFinite(b));
+}
 
 function loadDsHistory() {
   try {
     const raw = JSON.parse(fs.readFileSync(DS_HISTORY_PATH(), 'utf8'));
     if (Array.isArray(raw)) {
-      dsSamples = raw
-        .filter((p) => Array.isArray(p) && p.length >= 2)
-        .map(([t, b]) => [Number(t), Number(b)])
-        .filter(([t, b]) => Number.isFinite(t) && Number.isFinite(b));
+      // 旧版平铺数组 → 挂到迁移出来的那个 DeepSeek 账户上
+      const acc = config.accounts.find((a) => a.provider === 'deepseek');
+      if (acc) dsSamples.set(acc.id, sanitizeSamples(raw));
+      return;
+    }
+    if (raw && typeof raw === 'object') {
+      for (const [id, arr] of Object.entries(raw)) {
+        if (getAcc(id)) dsSamples.set(id, sanitizeSamples(arr));
+      }
     }
   } catch { /* 首次运行 / 文件损坏：从空历史开始 */ }
 }
 
 function saveDsHistory() {
-  try { fs.writeFileSync(DS_HISTORY_PATH(), JSON.stringify(dsSamples)); }
-  catch (e) { log('保存 DS 差值历史失败:', e); }
+  try {
+    const out = {};
+    for (const [id, arr] of dsSamples) if (arr.length) out[id] = arr;
+    fs.writeFileSync(DS_HISTORY_PATH(), JSON.stringify(out));
+  } catch (e) { log('保存 DS 差值历史失败:', e); }
 }
-
-/** 记一个余额样本（内部会抽稀：值没变的轮询不落盘） */
-function recordSample(ts, balance) {
-  const before = dsSamples;
-  const next = dsHistory.appendSample(before, ts, balance);
-  const lastChanged = next.length && before.length && next[next.length - 1][1] !== before[before.length - 1][1];
-  if (next.length === before.length && !lastChanged) return;
-  dsSamples = next;
-  saveDsHistory();
-}
-
-/** 用平台账单（权威）或本地差值重算汇总；余额用作「预估可用天数」的分子 */
-function refreshDsSummary() {
-  const balance = ds.balance ? ds.balance.total : null;
-  const days = dsRangeDays();
-  const now = Date.now();
-  // 平台账单给的是已结算的日粒度数字；实时读数（近 1 小时 / 24 小时图）永远来自本地样本
-  ds.summary = (ds.costMonths && ds.costMonths.length)
-    ? dsHistory.summarizePlatform(ds.costMonths, now, { days, balance, samples: dsSamples })
-    : dsHistory.summarize(dsSamples, now, { days, balance });
-}
-
-/** 逐日序列的长度：24h 档用不上它（图表走 summary.hourly），给 7 即可 */
-const dsRangeDays = () => (config.dsRange === '30d' ? 30 : 7);
 
 // 视觉卡片尺寸；窗口 = 卡片 + 2*PAD（阴影在窗口内衰减完，避免圆角外被切出直角残影）
 const PAD = 12;
-// 胶囊是双列布局：左 GLM 右 DeepSeek；只配了一边就收回单列宽度
-const CAPSULE = { both: 188, single: 152, h: 40 };
+// 胶囊：列宽来自 provider meta（capsuleW），多列之间竖发丝线；没配任何账户时兜底放提示文案
+const CAP_SEP = 10;
+const CAP_MIN = 150;
+const CAPSULE_H = 40;
+// 胶囊真实尺寸由渲染层实测上报（见 capsule:size）：meta 里的 capsuleW / CAPSULE_H 只用于
+// 「首帧还没测出来」的兜底。写死的宽度会被内容撑破（多账户、余额位数变化、账户名长短），
+// 所以窗口尺寸一律以实测为准 —— 渲染层画多大，窗口就多大。
+let capsuleBox = null;        // { w, h } 内容盒尺寸（CSS px，不含 PAD）
+let panelBoxH = 0;            // 面板实测内容高度（CSS px）：两页签取高者，切页签不跳
+let boxDirty = false;         // 拖拽期间收到的尺寸变化：松手后再补一次重排
+// 面板：账户 chips 行只有在「某家配了多个账户」时才出现（行高恒定，切页签窗口零位移）
+const ACC_ROW_H = 26;
 const SIZES = {
   // 两个页签**同高**：切页签时窗口尺寸一个像素都不动，视觉上完全不跳
   panel: { w: 326, h: 270 },
   settings: { w: 392, h: 712 },  // 内容本身可滚动，窗口高度不再随内容增长
 };
 
+/** 当前有启用账户的 provider（按注册表顺序），胶囊列与此同序 */
+function activeProviders() {
+  return providers.list.filter((p) => enabledOf(p.id).length > 0);
+}
+
 function winSize(view) {
   if (view === 'capsule') {
-    const both = !!config.token && !!config.dsToken;
-    return { w: (both ? CAPSULE.both : CAPSULE.single) + PAD * 2, h: CAPSULE.h + PAD * 2 };
+    // 实测优先；未测过（首帧 / 渲染层崩溃）才按 meta 估算
+    if (capsuleBox && capsuleBox.w > 0) {
+      return { w: capsuleBox.w + PAD * 2, h: capsuleBox.h + PAD * 2 };
+    }
+    const cols = activeProviders();
+    const w = cols.length
+      ? cols.reduce((s, p) => s + p.capsuleW, 0) + CAP_SEP * (cols.length - 1)
+      : CAP_MIN;
+    return { w: w + PAD * 2, h: CAPSULE_H + PAD * 2 };
+  }
+  if (view === 'panel') {
+    const s = SIZES.panel;
+    // 实测优先（渲染层按两个页签里高的那个报）：换字体/换系统时行高会差几像素，
+    // 写死的高度不是把 chips 行裁掉、就是在底部多出一截空白。兜底才用 meta 估。
+    if (panelBoxH > 0) return { w: s.w + PAD * 2, h: panelBoxH + PAD * 2 };
+    const multi = providers.list.some((p) => config.accounts.filter((a) => a.provider === p.id).length > 1);
+    return { w: s.w + PAD * 2, h: s.h + PAD * 2 + (multi ? ACC_ROW_H : 0) };
   }
   const s = SIZES[view] || SIZES.panel;
   return { w: s.w + PAD * 2, h: s.h + PAD * 2 };
+}
+
+/** 渲染层实测的胶囊内容尺寸（CSS px）：只在真的变了才重排窗口，避免每秒空转 */
+function setCapsuleBox(sz) {
+  const w = Math.round(Number(sz && sz.w) || 0);
+  const h = Math.round(Number(sz && sz.h) || 0);
+  if (!(w > 0) || !(h > 0) || w > 4000 || h > 400) return;   // 明显不合理的值直接丢（渲染层没布局完）
+  if (capsuleBox && capsuleBox.w === w && capsuleBox.h === h) return;
+  capsuleBox = { w, h };
+  // 不在胶囊视图时不重排（面板/设置的尺寸与它无关）；首帧重排无妨 —— 此时窗口还没出场
+  if (config.view !== 'capsule') return;
+  // 拖拽中不动尺寸：此时改窗口会和拖拽那套「尺寸钉死」的定位打架，松手后再对齐
+  if (dragging) { boxDirty = true; return; }
+  applyView('capsule');
+}
+
+/** 渲染层实测的面板内容高度（两页签取高者）：同上，只在真的变了才重排 */
+function setPanelBoxH(h) {
+  const n = Math.round(Number(h) || 0);
+  if (!(n > 0) || n > 4000) return;
+  if (panelBoxH === n) return;
+  panelBoxH = n;
+  if (config.view !== 'panel') return;
+  if (dragging) { boxDirty = true; return; }
+  applyView('panel');
 }
 
 /* ---------------- 窗口与视图 ---------------- */
@@ -228,12 +295,8 @@ function clampX(x, w) {
   return Math.min(Math.max(x, wa.x), wa.x + wa.width - w);
 }
 
-function clampY(y, h) {
-  const wa = workArea();
-  return Math.min(Math.max(y, wa.y), wa.y + wa.height - h);
-}
-
 function applyView(view) {
+  const prevView = config.view;   // 必须在赋值前抓：判断这次是「换视图」还是「胶囊自身长胖了」
   config.view = view;
   // 展开态按 zoom 等比缩放（内容 setZoomFactor + 窗口尺寸同步乘 zoom）；胶囊保持原始大小
   const factor = view === 'capsule' ? 1 : (config.zoom || 1);
@@ -243,12 +306,28 @@ function applyView(view) {
   const cp = capsulePos();
   let b;
   if (view === 'capsule') {
-    const wa = waFor({ x: cp.x, y: cp.y, width: s.w, height: s.h });
+    // 胶囊自身尺寸变了（账户增减 / 数字位数变化 / 换布局）：锚住「就近的一边」长出去。
+    // 贴在屏幕右侧的挂件变宽时若固定左上角，会向右溢出再被夹回来 —— 视觉上跳一下。
+    const cur = (prevView === 'capsule' && win && !win.isDestroyed()) ? win.getBounds() : null;
+    let x = cp.x, y = cp.y;
+    if (cur && (cur.width !== s.w || cur.height !== s.h)) {
+      const cwa = waFor(cur);
+      const dockRight = cur.x + cur.width / 2 > cwa.x + cwa.width / 2;
+      x = dockRight ? cur.x + cur.width - s.w : cur.x;
+      y = cur.y;
+    }
+    const wa = waFor({ x, y, width: s.w, height: s.h });
     b = {
-      x: Math.min(Math.max(cp.x, wa.x), wa.x + wa.width - s.w),
-      y: Math.min(Math.max(cp.y, wa.y), wa.y + wa.height - s.h),
+      x: Math.min(Math.max(x, wa.x), wa.x + wa.width - s.w),
+      y: Math.min(Math.max(y, wa.y), wa.y + wa.height - s.h),
       width: s.w, height: s.h,
     };
+    // 用户拖过的位置要跟着尺寸走，否则下次「面板 → 胶囊」会跳回旧锚点；
+    // 没拖过（pos=null）就保持 defaultPos 的「自动贴右边」行为，不落盘
+    if (config.pos && (config.pos.x !== b.x || config.pos.y !== b.y)) {
+      config.pos = { x: b.x, y: b.y };
+      saveConfig();
+    }
   } else {
     // 与胶囊同一左上角、向右下生长：窗口原点不跳变，越界才收回工作区内
     const wa = waFor({ x: cp.x, y: cp.y, width: s.w, height: s.h });
@@ -262,6 +341,8 @@ function applyView(view) {
   win.setBounds(b);
   win.setResizable(false);
   setImmediate(() => {
+    // 改尺寸后安排一次整窗重绘：透明窗口在 Windows 上偶发「长出来的那块没重绘」（看着像下方空白）
+    try { win.webContents.invalidate(); } catch { /* 窗口销毁竞态，忽略 */ }
     assertTopmost(); // 样式操作可能扰动 z 序，随手自愈
     log('view →', view, JSON.stringify(b));
     broadcast();
@@ -284,7 +365,6 @@ function assertTopmost() {
   } catch { /* 窗口销毁竞态，忽略 */ }
 }
 
-/* ---------------- 状态广播 ---------------- */
 /* ---------------- 主题：截屏采样背景明暗 ---------------- */
 function avgLum(img) {
   const bm = img.toBitmap(); // BGRA
@@ -354,32 +434,94 @@ async function applyTheme() {
 /** 只把凭据尾号下发给渲染层用于回显，明文不出主进程 */
 const tail = (t) => (t ? String(t).slice(-6) : '');
 
+/** 某家 provider 当前应展示的账户（胶囊/面板）；指向失效时顺到第一个启用的 */
+function activeOf(pid) {
+  const list = enabledOf(pid);
+  if (!list.length) return null;
+  const cur = config.active[pid];
+  return list.find((a) => a.id === cur) ? cur : list[0].id;
+}
+
+const TIER_RANK = { low: 0, mid: 1, high: 2 };
+const worseOf = (a, b) => (TIER_RANK[a] >= TIER_RANK[b] ? a : b);
+
+/** 单个账户的档位：过期算 high；还没数据返回 null（渲染层沿用全局档位色）。
+ *  胶囊平铺时每个账户各按自己的水位变色，所以档位要下到账户粒度而不是只给全局。 */
+function tierOfAccount(p, r) {
+  if (typeof p.tier !== 'function') return null;
+  if (r.status === 'expired') return 'high';
+  if (r.status !== 'ok' || !r.data) return null;
+  return p.tier(r.data, config.warnThreshold);
+}
+
+/** 档位型 provider 的最差账户档位（无档位实现的返回 null） */
+function worstTierProvider(p) {
+  if (typeof p.tier !== 'function') return null;
+  let tier = 'low';
+  for (const a of enabledOf(p.id)) {
+    const t = tierOfAccount(p, rtOf(a));
+    if (t) tier = worseOf(tier, t);
+  }
+  return tier;
+}
+
+/** 全局最差档位：任一账户过期 → high；否则取档位型 provider 各账户的最差档 */
+function worstTier() {
+  let tier = 'low';
+  for (const p of providers.list) {
+    const t = worstTierProvider(p);
+    if (t) tier = worseOf(tier, t);
+  }
+  return tier;
+}
+
+/** 账户的凭据回显（{credKey: {set, tail}}），明文不出主进程 */
+function credsView(a) {
+  const p = providers.byId(a.provider);
+  const out = {};
+  for (const c of (p ? p.credentials : [])) {
+    const v = a.credentials[c.key] || '';
+    out[c.key] = { set: !!v, tail: tail(v) };
+  }
+  return out;
+}
+
+function panelTabResolved() {
+  if (providers.byId(config.panelTab) && config.accounts.some((a) => a.provider === config.panelTab)) {
+    return config.panelTab;
+  }
+  const first = providers.list.find((p) => config.accounts.some((a) => a.provider === p.id));
+  return first ? first.id : 'glm';
+}
+
 function buildState() {
+  const provState = {};
+  for (const p of providers.list) {
+    const accs = config.accounts.filter((a) => a.provider === p.id);
+    if (!accs.length) continue;   // 只下发配了账户的 provider（渲染层据此出页签/胶囊列）
+    provState[p.id] = {
+      name: p.name,
+      tab: p.tab,
+      tier: worstTierProvider(p),
+      accounts: accs.map((a) => {
+        const r = rtOf(a);
+        return {
+          id: a.id, name: a.name, enabled: a.enabled !== false,
+          status: r.status, msg: r.msg, lastFetchAt: r.lastFetchAt, data: r.data,
+          tier: tierOfAccount(p, r),   // 账户自己的水位（胶囊平铺时各格独立变色）
+        };
+      }),
+      activeId: activeOf(p.id),
+    };
+  }
   return {
     view: config.view,
     hasAcrylic,
     theme: resolvedTheme,
     platform: process.platform,
-    providers: {
-      glm: {
-        status: status.kind,
-        msg: status.msg,
-        data: config.lastData,
-        lastFetchAt,
-      },
-      ds: {
-        status: ds.status,
-        msg: ds.msg,
-        lastFetchAt: ds.lastFetchAt,
-        balance: ds.balance,        // {currency,total,granted,toppedUp,available}
-        summary: ds.summary,        // 今日/近7/近30/本月/日均/可用天数/逐日序列
-        tokens: ds.amount,          // 本月 token 分类（需平台令牌）
-        platform: { status: ds.pStatus, msg: ds.pMsg, lastFetchAt: ds.pLastFetchAt },
-      },
-    },
+    worstTier: worstTier(),
+    providers: provState,
     config: {
-      hasToken: !!config.token,
-      tokenTail: tail(config.token),
       intervalMin: config.intervalMin,
       warnThreshold: normWarn(config.warnThreshold),
       paceAlert: !!config.paceAlert,
@@ -388,27 +530,30 @@ function buildState() {
       alwaysOnTop: config.alwaysOnTop,
       zoom: config.zoom || 1,
       theme: config.theme,
-      panelTab: config.panelTab === 'ds' ? 'ds' : 'glm',
+      panelTab: panelTabResolved(),
+      capsuleLayout: config.capsuleLayout === 'all' ? 'all' : 'switch',
       dsRange: ['1h', '24h', '7d', '30d'].includes(config.dsRange) ? config.dsRange : '7d',
       dsPollMin: Number(config.dsPollMin) || 0,
-      dsHasToken: !!config.dsToken,
-      dsTokenTail: tail(config.dsToken),
-      dsHasPlatform: !!config.dsPlatformToken,
-      dsPlatformTail: tail(config.dsPlatformToken),
       isPortable: IS_PORTABLE,
+      active: { ...config.active },
+      // 账户清单（凭据只给「是否已配 + 尾号」）
+      accounts: config.accounts.map((a) => ({
+        id: a.id, provider: a.provider, name: a.name, enabled: a.enabled !== false,
+        creds: credsView(a),
+      })),
     },
   };
 }
+
 function broadcast() {
   if (win && !win.isDestroyed()) win.webContents.send('state', buildState());
   updateTray();
 }
 
 /* ---------------- 刷新 ---------------- */
-/** Electron net 走系统代理与 Chromium 网络栈；失败退回 Node fetch（尊享 NODE_USE_ENV_PROXY） */
-async function withNet(fn) {
-  try { return await fn((u, o) => net.fetch(u, o)); }
-  catch { return fn(); }
+/** Electron net 走系统代理与 Chromium 网络栈；单次失败退回 Node fetch（尊重 NODE_USE_ENV_PROXY） */
+async function netFetch(u, o) {
+  try { return await net.fetch(u, o); } catch { return fetch(u, o); }
 }
 
 function notify(title, body) {
@@ -421,213 +566,35 @@ function notify(title, body) {
   } catch { /* 通知失败不影响主流程 */ }
 }
 
-/**
- * 超额提醒：5h 与周两个窗口共用同一个阈值（与进度条变色档位同源），
- * 各自跨过阈值时提醒一次，按 windowStart 去重（窗口滚动后才可能再次提醒）。
- * 两个窗口同一轮都越线时合成一条，避免连弹两条。
- */
-function notifyOverQuota(data) {
-  const w = normWarn(config.warnThreshold);
-  const checks = [
-    { key: 'lastNotifiedWindowStart', win: data.five, name: '5小时额度' },
-    { key: 'lastNotifiedWeekStart', win: data.week, name: '周额度' },
-  ];
-  const hits = [];
-  for (const c of checks) {
-    if (!c.win || c.win.windowStart == null) continue;
-    if (c.win.percent < w || config[c.key] === c.win.windowStart) continue;
-    config[c.key] = c.win.windowStart;
-    hits.push(c);
-  }
-  if (!hits.length) return;
-  saveConfig();
-  const reset = (win) => (win.nextResetTime ? `${fmtResetTime(win.nextResetTime)} 重置` : '重置时间未知');
-  notify(
-    hits.map((c) => `${c.name}已用 ${c.win.percent}%`).join(' · '),
-    hits.map((c) => `剩余 ${fmtPoints(c.win.remaining)} · ${reset(c.win)}`).join('\n'),
-  );
+/** provider 拉取上下文：把「这一个是哪个账户、上一次什么状态、历史存哪」一次说清 */
+function makeCtx(acc, prevKind) {
+  const r = rtOf(acc);
+  const sibs = enabledOf(acc.provider);
+  return {
+    fetchImpl: netFetch,
+    accountName: sibs.length > 1 ? `「${acc.name}」` : '',   // 单账户保持与旧版相同的文案
+    config: { warnThreshold: config.warnThreshold, notifyReset: config.notifyReset, dsRange: config.dsRange },
+    prev: r.data,
+    prevKind: prevKind || r.status,
+    prevPlatform: (r.data && r.data.platform && r.data.platform.status) || 'empty',
+    alertState: acc.alertState || (acc.alertState = {}),
+    mem: r.mem,
+    store: {
+      get samples() { return dsSamples.get(acc.id) || []; },
+      setSamples(next) { dsSamples.set(acc.id, next || []); },
+      save: saveDsHistory,
+    },
+    now: Date.now(),
+  };
 }
 
-function schedule() {
-  if (timer) clearTimeout(timer);
-  const min = config.intervalMin > 0 ? config.intervalMin : 0;
-  if (!min) return;
-  const jitter = (Math.random() * 40 - 20) * 1000; // ±20s，避免整点齐射
-  timer = setTimeout(refresh, min * 60000 + jitter);
-}
-
-/**
- * 余额单独的高频轮询：官方余额接口又便宜又是公开文档接口，
- * 没必要跟 GLM 配额、平台账单挤在一个 10 分钟的周期里。
- * 差值历史的分辨率就等于这个频率——「最近 1 小时」「24 小时图」全靠它。
- */
-function scheduleDs() {
-  if (dsTimer) clearTimeout(dsTimer);
-  const min = Number(config.dsPollMin);
-  if (!(min > 0) || !config.dsToken) return;
-  const jitter = (Math.random() * 20 - 10) * 1000; // ±10s
-  dsTimer = setTimeout(async () => {
-    await pollDsBalance();
-    scheduleDs();
-  }, min * 60000 + jitter);
-}
-
-/** 只拉余额、只记样本：不碰 GLM 配额，也不碰平台账单接口（后者是私有接口，要克制） */
-async function pollDsBalance() {
-  if (!config.dsToken || fetching || dsPolling) return;
-  dsPolling = true;
-  try {
-    const prevKind = ds.status;
-    const r = await withNet((f) => fetchBalance(config.dsToken, f));
-    ds.lastFetchAt = Date.now();
-    if (r.ok) {
-      ds.balance = r.data;
-      ds.status = 'ok'; ds.msg = '';
-      if (prevKind === 'expired') notify('DeepSeek 已恢复', '余额数据恢复正常刷新');
-      dsExpiredNotified = false;
-      recordSample(r.data.fetchedAt, r.data.total);
-      config.lastDs = r.data;
-      saveConfig();
-      refreshDsSummary();
-      broadcast();
-      return;
-    }
-    // 高频轮询失败不覆盖状态：让主周期的完整刷新去报错（避免偶发网络抖动刷屏）
-    if (r.kind === 'expired') {
-      ds.status = 'expired'; ds.msg = r.msg;
-      if (!dsExpiredNotified) { notify('DeepSeek API Key 已失效', '点击挂件更新 API Key'); dsExpiredNotified = true; }
-      broadcast();
-    }
-  } finally {
-    dsPolling = false;
-  }
-}
-
-/** GLM 链路：配额百分比。prevKind 是发起前的状态，用来识别「从失效中恢复」 */
-async function refreshGlm(prevKind) {
-  const r = await withNet((f) => fetchUsage(config.token, f));
-  lastFetchAt = Date.now();
-  if (r.ok) {
-    prevData = config.lastData;
-    config.lastData = r.data;
-    status.kind = 'ok'; status.msg = '';
-    saveConfig();
-
-    if (prevKind === 'expired') notify('Token 已恢复', '用量数据恢复正常刷新');
-    expiredNotified = false;
-
-    notifyOverQuota(r.data);
-    // 重置回满提醒：窗口滚动且此前用量过半
-    if (config.notifyReset && prevData && prevData.five &&
-        prevData.five.windowStart !== r.data.five.windowStart && prevData.five.percent >= 50) {
-      notify('5小时额度已重置', '新窗口已开启，额度回满');
-    }
-    backoffUntil = 0;
-    return;
-  }
-  if (r.kind === 'expired') {
-    status.kind = 'expired'; status.msg = r.msg;
-    if (!expiredNotified) { notify('Token 已失效', '点击挂件更新 Token'); expiredNotified = true; }
-    return;
-  }
-  if (r.kind === 'ratelimit') {
-    status.kind = 'ratelimit'; status.msg = r.msg;
-    const base = config.intervalMin > 0 ? config.intervalMin : 10;
-    backoffUntil = Date.now() + base * 2 * 60000;
-    return;
-  }
-  status.kind = 'error'; status.msg = r.msg; // 保留 lastData 展示旧值
-  // 解析失败多为过渡态（如 5h 窗口滚动瞬间字段不全）：15 秒后自动重试一次（5 分钟内最多一次）
-  if (r.kind === 'parse' && Date.now() - lastParseRetryAt > 5 * 60 * 1000) {
-    lastParseRetryAt = Date.now();
-    log('解析失败，15 秒后自动重试');
-    setTimeout(() => refresh(false), 15000);
-  }
-}
-
-/** DeepSeek 余额链路（官方 API Key，长期有效）。prevKind 是发起前的状态，用来识别「从失效中恢复」 */
-async function refreshDs(prevKind) {
-  if (!config.dsToken) {
-    ds.status = 'empty'; ds.msg = ''; ds.balance = null;
-    ds.pStatus = 'empty'; ds.pMsg = '';
-    refreshDsSummary();
-    return;
-  }
-  const r = await withNet((f) => fetchBalance(config.dsToken, f));
-  ds.lastFetchAt = Date.now();
-  if (r.ok) {
-    ds.balance = r.data;
-    ds.status = 'ok'; ds.msg = '';
-    if (prevKind === 'expired') notify('DeepSeek 已恢复', '余额数据恢复正常刷新');
-    dsExpiredNotified = false;
-    recordSample(r.data.fetchedAt, r.data.total);   // 喂给差值历史
-    config.lastDs = r.data;
-    saveConfig();
-  } else if (r.kind === 'expired') {
-    ds.status = 'expired'; ds.msg = r.msg;
-    if (!dsExpiredNotified) { notify('DeepSeek API Key 已失效', '点击挂件更新 API Key'); dsExpiredNotified = true; }
-  } else {
-    ds.status = r.kind === 'ratelimit' ? 'ratelimit' : 'error';
-    ds.msg = r.msg;
-  }
-  await refreshDsPlatform();
-  refreshDsSummary();
-}
-
-/**
- * 平台账单链路（选配，userToken 会过期）。
- * 一次拉当前月 + 上个月：当前月给「本月」，上月补全「近 30 天」跨月的部分。
- * 平台按 UTC 日界切天，界面会标注口径。轮询频率跟随 intervalMin（默认 10 分钟，
- * 远低于社区建议的 60 秒下限，不会触发风控）。
- */
-async function refreshDsPlatform() {
-  if (!config.dsPlatformToken) {
-    ds.pStatus = 'empty'; ds.pMsg = ''; ds.costMonths = null; ds.amount = null;
-    return;
-  }
-  const prevKind = ds.pStatus;
-  ds.pStatus = 'loading';
-  const now = new Date();
-  const cur = { year: now.getUTCFullYear(), month: now.getUTCMonth() + 1 };
-  const pm = new Date(Date.UTC(cur.year, cur.month - 2, 1));
-  const prev = { year: pm.getUTCFullYear(), month: pm.getUTCMonth() + 1 };
-  const [c0, c1, amt] = await Promise.all([
-    withNet((f) => fetchMonthlyCost(config.dsPlatformToken, cur, f)),
-    withNet((f) => fetchMonthlyCost(config.dsPlatformToken, prev, f)),
-    withNet((f) => fetchMonthlyAmount(config.dsPlatformToken, cur, f)),
-  ]);
-  ds.pLastFetchAt = Date.now();
-  if (c0.ok) {
-    ds.costMonths = [c0.data, c1.ok ? c1.data : null].filter(Boolean);
-    ds.amount = amt.ok ? amt.data : null;
-    ds.pStatus = 'ok'; ds.pMsg = '';
-    if (prevKind === 'expired') notify('DeepSeek 账单已恢复', '精确用量数据恢复正常刷新');
-    dsPlatformExpiredNotified = false;
-    return;
-  }
-  ds.costMonths = null; ds.amount = null;
-  if (c0.kind === 'expired') {
-    ds.pStatus = 'expired'; ds.pMsg = c0.msg;
-    if (!dsPlatformExpiredNotified) {
-      notify('DeepSeek 平台会话已过期', '精确账单已退回本地累计，重新获取 userToken 可恢复');
-      dsPlatformExpiredNotified = true;
-    }
-    return;
-  }
-  ds.pStatus = c0.kind === 'ratelimit' ? 'ratelimit' : 'error';
-  ds.pMsg = c0.msg;
-}
-
+/** 主周期：遍历所有启用账户并行拉取；任一账户失败不影响别人 */
 async function refresh(manual = false) {
   if (fetching) return;
-  const hasGlm = !!config.token;
-  const hasDs = !!config.dsToken;
-  // 「没凭据」要排在节流之前判断：否则刚清空凭据时，30 秒内的手动刷新会被挡掉，
-  // 界面继续显示上一次成功的数据，看起来像没生效
-  if (!hasGlm && !hasDs) {
-    status.kind = 'empty'; status.msg = '';
-    ds.status = 'empty'; ds.msg = '';
-    refreshDsSummary();
+  const list = config.accounts.filter((a) => a.enabled !== false);
+  // 「没账户」要排在节流之前判断：否则刚删光账户时，30 秒内的手动刷新会被挡掉
+  if (!list.length) {
+    for (const a of config.accounts) { const r = rtOf(a); r.status = 'empty'; r.msg = ''; }
     broadcast();
     return;
   }
@@ -636,25 +603,134 @@ async function refresh(manual = false) {
     lastManualAt = Date.now();
   }
   fetching = true;
-  const prevGlmKind = status.kind;
-  const prevDsKind = ds.status;
-  if (hasGlm) { status.kind = 'loading'; status.msg = ''; }
-  if (hasDs) { ds.status = 'loading'; ds.msg = ''; }
+  for (const a of list) { const r = rtOf(a); r.status = 'loading'; r.msg = ''; }
   broadcast();
 
-  // 两个 provider 并行：任一失败不影响另一个的状态与展示
-  await Promise.all([
-    hasGlm ? refreshGlm(prevGlmKind) : Promise.resolve(),
-    hasDs ? refreshDs(prevDsKind) : Promise.resolve(),
-  ]);
+  await Promise.all(list.map((a) => refreshAccount(a)));
 
   fetching = false;
   broadcast();
   schedule();
   applyTheme(); // 顺带每轮刷新重新采样背景明暗
-  const g = config.lastData ? `5h=${config.lastData.five.percent}% 周=${config.lastData.week.percent}%` : '无数据';
-  const db = ds.balance ? `${ds.balance.currency} ${ds.balance.total}` : '无数据';
-  log('refresh 结果 · GLM', status.kind, status.msg || '', g, '| DS', ds.status, ds.msg || '', db, '| 账单', ds.pStatus, ds.pMsg || '');
+  log('refresh 结果 ·', list.map((a) => {
+    const r = rtOf(a);
+    return `${a.name}(${a.provider})=${r.status}${r.msg ? ' ' + r.msg : ''}`;
+  }).join(' · '));
+}
+
+async function refreshAccount(acc) {
+  const prov = providers.byId(acc.provider);
+  if (!prov || typeof prov.fetch !== 'function') return;
+  const r = rtOf(acc);
+  const ctx = makeCtx(acc, 'loading');
+  let res;
+  try {
+    res = await prov.fetch(acc.credentials, ctx);
+  } catch (e) {
+    res = { ok: false, kind: 'error', msg: String((e && e.message) || e), notes: [] };
+  }
+  r.lastFetchAt = Date.now();
+  for (const n of res.notes || []) notify(n.title, n.body);
+  if (res.ok) {
+    r.data = res.data;
+    r.status = 'ok'; r.msg = '';
+    r.backoffUntil = 0;
+    config.snapshot[acc.id] = res.data;   // 重启秒显
+    saveConfig();                          // 同时持久化 alertState 的去重推进
+    return;
+  }
+  if (res.kind === 'ratelimit') {
+    r.status = 'ratelimit'; r.msg = res.msg;
+    const base = config.intervalMin > 0 ? config.intervalMin : 10;
+    r.backoffUntil = Date.now() + base * 2 * 60000;
+    return;
+  }
+  r.status = res.kind === 'empty' ? 'empty' : res.kind;   // expired|error|parse|empty
+  r.msg = res.msg || '';
+  // 解析失败多为过渡态（如 5h 窗口滚动瞬间字段不全）：15 秒后自动重试一次（5 分钟内最多一次）
+  if (res.kind === 'parse' && Date.now() - r.parseRetryAt > 5 * 60 * 1000) {
+    r.parseRetryAt = Date.now();
+    log('解析失败，15 秒后自动重试 ·', acc.id);
+    setTimeout(() => {
+      const a = getAcc(acc.id);
+      if (a && a.enabled !== false && !fetching) refreshAccount(a).then(broadcast);
+    }, 15000);
+  }
+}
+
+/**
+ * 余额类高频轮询（provider 声明 pollable 才参与）。
+ * 官方余额接口又便宜又是公开文档接口，没必要跟配额、平台账单挤在主周期里；
+ * 差值历史的分辨率就等于这个频率——「最近 1 小时」「24 小时图」全靠它。
+ */
+function scheduleDs() {
+  if (dsTimer) clearTimeout(dsTimer);
+  const min = Number(config.dsPollMin);
+  const targets = pollTargets();
+  if (!(min > 0) || !targets.length) return;
+  const jitter = (Math.random() * 20 - 10) * 1000; // ±10s
+  dsTimer = setTimeout(async () => {
+    await pollTick();
+    scheduleDs();
+  }, min * 60000 + jitter);
+}
+
+function pollTargets() {
+  return config.accounts.filter((a) => {
+    if (a.enabled === false) return false;
+    const p = providers.byId(a.provider);
+    return !!(p && p.pollable && a.credentials && Object.keys(p.extractors || {}).some((k) => a.credentials[k]));
+  });
+}
+
+async function pollTick() {
+  if (fetching || dsPolling) return;
+  const targets = pollTargets();
+  if (!targets.length) return;
+  dsPolling = true;
+  try {
+    // 多账户错峰起步，避免同一瞬间齐射
+    await Promise.all(targets.map((a, i) => pollAccount(a, i * 900)));
+  } finally {
+    dsPolling = false;
+  }
+}
+
+async function pollAccount(acc, delay) {
+  if (delay) await new Promise((r) => setTimeout(r, delay));
+  const accNow = getAcc(acc.id);
+  if (!accNow || accNow.enabled === false) return;
+  const prov = providers.byId(accNow.provider);
+  if (!prov || typeof prov.pollBalance !== 'function') return;
+  const r = rtOf(accNow);
+  const ctx = makeCtx(accNow, r.status);
+  let res;
+  try {
+    res = await prov.pollBalance(accNow.credentials, ctx);
+  } catch { return; }   // 高频轮询失败不覆盖状态：让主周期的完整刷新去报错（避免偶发网络抖动刷屏）
+  r.lastFetchAt = Date.now();
+  for (const n of res.notes || []) notify(n.title, n.body);
+  if (res.ok) {
+    r.data = res.data;
+    r.status = 'ok'; r.msg = '';
+    config.snapshot[accNow.id] = res.data;
+    saveConfig();
+    broadcast();
+    return;
+  }
+  if (res.kind === 'expired') {
+    r.status = 'expired'; r.msg = res.msg;
+    broadcast();
+  }
+}
+
+function schedule() {
+  if (timer) clearTimeout(timer);
+  const min = config.intervalMin > 0 ? config.intervalMin : 0;
+  if (!config.accounts.some((a) => a.enabled !== false)) return;
+  if (!min) return;
+  const jitter = (Math.random() * 40 - 20) * 1000; // ±20s，避免整点齐射
+  timer = setTimeout(refresh, min * 60000 + jitter);
 }
 
 /* ---------------- 托盘 ---------------- */
@@ -669,30 +745,36 @@ function money(n, currency) {
 function updateTray() {
   if (!tray) return;
   const lines = [];
-  const d = config.lastData;
-  if (status.kind === 'ok' && d) {
-    const lv = d.level ? ` ${levelName(d.level)}` : '';
-    lines.push(`GLM Coding${lv}`);
-    lines.push(`5小时 ${d.five.percent}% · 周 ${d.week.percent}% · ${fmtResetTime(d.five.nextResetTime)} 重置`);
-  } else if (status.kind === 'expired') lines.push('GLM：Token 已失效，点击更新');
-  else if (status.kind === 'ratelimit') lines.push('GLM：限流退避中，稍后自动重试');
-  else if (status.kind === 'empty') lines.push('GLM：未配置 Token，点击设置');
-  else if (status.kind === 'error') lines.push('GLM：更新失败');
-
-  if (ds.status === 'ok' && ds.balance) {
-    let l = `DeepSeek ${money(ds.balance.total, ds.balance.currency)}`;
-    if (ds.summary && ds.summary.today > 0) l += ` · 今日 ${money(ds.summary.today, ds.balance.currency)}`;
-    lines.push(l);
-  } else if (ds.status === 'expired') lines.push('DeepSeek：API Key 已失效，点击更新');
-  else if (ds.status === 'ratelimit') lines.push('DeepSeek：限流退避中，稍后自动重试');
-  else if (ds.status === 'empty') lines.push('DeepSeek：未配置，点击设置');
-  else if (ds.status === 'error') lines.push('DeepSeek：更新失败');
-
+  for (const p of providers.list) {
+    const accs = config.accounts.filter((a) => a.provider === p.id);
+    if (!accs.length) continue;
+    const named = accs.length > 1;
+    for (const a of accs) {
+      const who = named ? `「${a.name}」` : '';
+      const r = rtOf(a);
+      if (r.status === 'ok' && r.data) {
+        if (p.id === 'glm') {
+          const lv = r.data.level ? ` ${levelName(r.data.level)}` : '';
+          lines.push(`${who}GLM Coding${lv}`);
+          lines.push(`5小时 ${r.data.five.percent}% · 周 ${r.data.week.percent}% · ${fmtResetTime(r.data.five.nextResetTime)} 重置`);
+        } else if (p.id === 'deepseek' && r.data.balance) {
+          let l = `${who}DeepSeek ${money(r.data.balance.total, r.data.balance.currency)}`;
+          if (r.data.summary && r.data.summary.today > 0) l += ` · 今日 ${money(r.data.summary.today, r.data.balance.currency)}`;
+          lines.push(l);
+        } else {
+          lines.push(`${who}${p.name}`);
+        }
+      } else if (r.status === 'expired') lines.push(`${who}${p.name}：凭据已失效，点击更新`);
+      else if (r.status === 'ratelimit') lines.push(`${who}${p.name}：限流退避中，稍后自动重试`);
+      else if (r.status === 'empty') lines.push(`${who}${p.name}：未配置，点击设置`);
+      else if (r.status === 'error') lines.push(`${who}${p.name}：更新失败`);
+    }
+  }
   if (!lines.length) lines.push('用量挂件');
   tray.setToolTip(lines.slice(0, 5).join('\n')); // Windows 托盘提示有长度上限
 
   // 动态图标：状态未变化时不重设
-  const tier = status.kind === 'ok' && d ? tierOf(d.five.percent) : status.kind === 'expired' ? 'high' : 'low';
+  const tier = worstTier();
   if (trayIconCache.tier !== tier || !trayIconCache.url) {
     if (trayIconCache.url) { try { tray.setImage(nativeImage.createFromDataURL(trayIconCache.url)); } catch { } }
     trayIconCache.tier = tier; // url 由渲染层推送
@@ -708,9 +790,9 @@ function buildTrayMenu() {
     { type: 'separator' },
     { label: '打开官网', click: () => shell.openExternal(OVERVIEW_URL) },
     { label: '窗口置顶', type: 'checkbox', checked: config.alwaysOnTop,
-      click: (m) => save({ alwaysOnTop: m.checked }) },
+      click: (m) => saveGlobal({ alwaysOnTop: m.checked }) },
     { label: '开机自启', type: 'checkbox', checked: config.autoStart,
-      click: (m) => save({ autoStart: m.checked }) },
+      click: (m) => saveGlobal({ autoStart: m.checked }) },
     { type: 'separator' },
     { label: '退出', click: () => app.quit() },
   ]);
@@ -723,39 +805,19 @@ function createTray() {
   updateTray();
 }
 
-/* ---------------- 配置保存（含副作用） ---------------- */
-function save(patch) {
-  let tokenChanged = false;
-  let dsTokenChanged = false;
+/* ---------------- 全局设置保存（含副作用） ---------------- */
+function saveGlobal(patch) {
   for (const [k, v] of Object.entries(patch || {})) {
-    if (!(k in ALL_DEFAULTS) || k === 'view' || k === 'pos' || k === 'lastData' || k === 'lastDs') continue;
-    if (k === 'token' || k === 'dsToken' || k === 'dsPlatformToken') {
-      const extract = k === 'token' ? extractToken : (k === 'dsToken' ? extractDsToken : extractPlatformToken);
-      const t = extract(String(v));
-      if (!t && String(v).trim() !== '') continue;   // 无法解析且非清空意图 → 忽略
-      if (t === config[k]) continue;
-      config[k] = t;
-      if (k === 'token') tokenChanged = true; else dsTokenChanged = true;
-      continue;
-    }
+    if (!(k in DEFAULTS) || k === 'view' || k === 'pos' || k === 'snapshot' || k === 'accounts' || k === 'active') continue;
     if (k === 'theme' && !['auto', 'dark', 'light'].includes(v)) continue;
-    if (k === 'panelTab' && !['glm', 'ds'].includes(v)) continue;
+    if (k === 'panelTab') { if (providers.byId(v)) config.panelTab = v; continue; }
     // 枚举类非法值一律忽略、保留原值（与 theme / panelTab 一致），不回退成默认
     if (k === 'dsRange') { if (!['1h', '24h', '7d', '30d'].includes(v)) continue; config.dsRange = v; continue; }
+    if (k === 'capsuleLayout') { if (!['switch', 'all'].includes(v)) continue; config.capsuleLayout = v; continue; }
     if (k === 'dsPollMin') { const n = Math.round(Number(v)); config.dsPollMin = n >= 0 && n <= 60 ? n : 2; continue; }
     if (k === 'warnThreshold') { config.warnThreshold = normWarn(v); continue; }
     if (k === 'paceAlert') { config.paceAlert = !!v; continue; }
     config[k] = v;
-  }
-  // 凭据被清空时立刻回到空态：否则「最近一次成功的数据」会继续当作现况展示，
-  // 而下面的手动刷新还可能被 30 秒节流挡掉（只有真的没凭据了才需要这样兜）
-  if (tokenChanged && !config.token) {
-    status.kind = 'empty'; status.msg = '';
-    config.lastData = null;
-  }
-  if (dsTokenChanged && !config.dsToken) {
-    Object.assign(ds, { status: 'empty', msg: '', balance: null, pStatus: 'empty', pMsg: '', costMonths: null, amount: null });
-    config.lastDs = null;
   }
   saveConfig();
 
@@ -766,18 +828,206 @@ function save(patch) {
     win.setAlwaysOnTop(config.alwaysOnTop, 'screen-saver');
   }
   if ('intervalMin' in (patch || {}) || 'warnThreshold' in (patch || {})) {
-    config.lastNotifiedWindowStart = 0; // 设置变更后重置提醒去重
-    config.lastNotifiedWeekStart = 0;
+    // 阈值/节奏变更后清提醒去重：新阈值要能立刻表达（下一轮成功刷新即按新阈值判）
+    for (const a of config.accounts) a.alertState = {};
   }
-  if ('dsRange' in (patch || {})) refreshDsSummary(); // 图表区间变了，汇总要重算
+  if ('dsRange' in (patch || {})) resummarizeDs(); // 图表区间变了，汇总要重算
   broadcast();
   schedule();
-  scheduleDs();   // 频率变了 / 凭据变了，都重排余额轮询
-  if (tokenChanged || dsTokenChanged) {
-    if (tokenChanged) expiredNotified = false;
-    refresh(true);
-  }
+  scheduleDs();   // 频率变了，重排余额轮询
   if ('theme' in (patch || {})) applyTheme(); // 强制主题立即生效；auto 也会重新采样
+  if (tray) tray.setContextMenu(buildTrayMenu());
+}
+
+/** dsRange 变更后重算所有 DeepSeek 账户的汇总（不发请求，从已有数据反推） */
+function resummarizeDs() {
+  const { summarize, summarizePlatform } = dsHistoryLib;
+  for (const a of config.accounts) {
+    if (a.provider !== 'deepseek') continue;
+    const r = rtOf(a);
+    if (!r.data || !r.data.balance) continue;
+    const days = config.dsRange === '30d' ? 30 : 7;
+    const samples = dsSamples.get(a.id) || [];
+    const bal = r.data.balance.total;
+    const months = r.mem.costMonths;
+    r.data = {
+      ...r.data,
+      summary: (months && months.length)
+        ? summarizePlatform(months, Date.now(), { days, balance: bal, samples })
+        : summarize(samples, Date.now(), { days, balance: bal }),
+    };
+  }
+  broadcast();
+}
+
+/* ---------------- 账户 CRUD ---------------- */
+function shortId() {
+  return Math.random().toString(36).slice(2, 8) + Date.now().toString(36).slice(-3);
+}
+
+/** 校验 + 提炼凭据：非法的非空输入被忽略（保留旧值），空串表示显式清除 */
+function cleanCredentials(provider, input, oldCreds) {
+  const p = providers.byId(provider);
+  const out = { ...(oldCreds || {}) };
+  if (!p) return out;
+  for (const decl of p.credentials) {
+    if (!(decl.key in (input || {}))) continue;
+    const raw = String(input[decl.key] == null ? '' : input[decl.key]).trim();
+    const ex = (p.extractors || {})[decl.key];
+    const t = raw === '' ? '' : (ex ? ex(raw) : raw);
+    if (!t && raw !== '') continue;   // 无法解析且非清空意图 → 忽略
+    out[decl.key] = t;
+  }
+  return out;
+}
+
+/**
+ * 「填了、但提取不出凭据」的字段（返回 label 列表）。
+ * 这是最常踩的坑：粘错字段（比如把平台的 userToken 粘进 API Key）、粘了别家的 key、粘一半。
+ * 必须报得具体 —— 否则表现是「提示保存成功、账户却没多」，用户只会觉得「加不上」。
+ * 留空不算：清空某个字段是明确意图，交给调用方按自己的语义处理。
+ */
+function unparsedFields(p, input) {
+  const out = [];
+  for (const decl of p.credentials) {
+    if (!(decl.key in (input || {}))) continue;
+    const raw = String(input[decl.key] == null ? '' : input[decl.key]).trim();
+    if (!raw) continue;
+    const ex = (p.extractors || {})[decl.key];
+    if (ex && !ex(raw)) out.push(decl.label);
+  }
+  return out;
+}
+
+const credErr = ({ missing, unparsed }) => (unparsed.length
+  ? `识别不出「${unparsed.join('、')}」—— 粘贴的内容里没有可用的凭据，确认一下是不是粘错了字段、或没复制完整`
+  : `缺少必填凭据：${missing.join('、')}`);
+
+function accAdd({ provider, name, credentials }) {
+  const p = providers.byId(provider);
+  if (!p) return { err: '未知 provider' };
+  const creds = cleanCredentials(provider, credentials || {}, {});
+  const unparsed = unparsedFields(p, credentials);
+  const missing = p.credentials.filter((c) => c.required && !creds[c.key]).map((c) => c.label);
+  if (unparsed.length || missing.length) {
+    const err = credErr({ missing, unparsed });
+    log('账户添加被拒 ·', provider, err);
+    return { err };
+  }
+  const acc = mkAccount(provider, shortId(),
+    String(name || '').trim() || `${p.tab} ${config.accounts.filter((x) => x.provider === provider).length + 1}`,
+    creds);
+  config.accounts.push(acc);
+  if (!config.active[provider]) config.active[provider] = acc.id;
+  afterAccountsChanged();
+  refreshAccount(acc).then(broadcast);   // 新账户立刻验证一次
+  log('账户添加 ·', provider, acc.id, acc.name);
+  return { ok: true, id: acc.id };
+}
+
+function accUpdate({ id, name, enabled, credentials }) {
+  const acc = getAcc(id);
+  if (!acc) return { err: '账户不存在' };
+  if (typeof name === 'string' && name.trim()) acc.name = name.trim();
+  if (enabled != null) acc.enabled = !!enabled;
+  const before = JSON.stringify(acc.credentials);
+  if (credentials) {
+    const p = providers.byId(acc.provider);
+    // 只拦「填了但识别不出」：留空（含清空某字段）是明确意图，照旧生效
+    const unparsed = p ? unparsedFields(p, credentials) : [];
+    if (unparsed.length) {
+      const err = credErr({ missing: [], unparsed });
+      log('账户更新被拒 ·', acc.provider, err);
+      return { err };
+    }
+    acc.credentials = cleanCredentials(acc.provider, credentials, acc.credentials);
+  }
+  const credsChanged = before !== JSON.stringify(acc.credentials);
+  afterAccountsChanged();
+  if (credsChanged) {
+    const r = rtOf(acc);
+    r.status = Object.keys(acc.credentials).length ? 'loading' : 'empty';
+    r.msg = '';
+    refreshAccount(acc).then(broadcast);
+  }
+  log('账户更新 ·', acc.provider, acc.id, credsChanged ? '(凭据变更)' : '');
+  return { ok: true };
+}
+
+function accRemove({ id }) {
+  const acc = getAcc(id);
+  if (!acc) return { err: '账户不存在' };
+  config.accounts = config.accounts.filter((a) => a.id !== id);
+  rt.delete(id);
+  dsSamples.delete(id);
+  saveDsHistory();
+  delete config.snapshot[id];
+  afterAccountsChanged();
+  log('账户删除 ·', acc.provider, id);
+  return { ok: true };
+}
+
+function accActivate({ provider, id }) {
+  if (!providers.byId(provider)) return { err: '未知 provider' };
+  if (!enabledOf(provider).some((a) => a.id === id)) return { err: '账户不存在或未启用' };
+  config.active[provider] = id;
+  saveConfig();
+  broadcast();
+  return { ok: true };
+}
+
+/**
+ * 胶囊上的账户切换菜单。
+ * 走系统原生菜单而不是自绘弹层：胶囊窗口只有 40px 高，自绘菜单要么把窗口撑大、要么被
+ * 窗口矩形裁掉，而原生菜单是独立窗口，既不受限也不会贴边翻车。返回选中后的新状态。
+ */
+function accMenu({ provider }) {
+  const p = providers.byId(provider);
+  const list = p ? enabledOf(provider) : [];
+  if (list.length < 2) return null;
+  const cur = activeOf(provider);
+  return new Promise((resolve) => {
+    let picked = null;
+    const template = list.map((a) => ({
+      label: a.name,
+      type: 'radio',
+      checked: a.id === cur,
+      click: () => { picked = a.id; },
+    }));
+    template.push({ type: 'separator' }, {
+      label: `管理 ${p.tab} 账户…`,
+      click: () => { picked = null; setView('settings'); },
+    });
+    menuOpen = true;
+    Menu.buildFromTemplate(template).popup({
+      window: win || undefined,
+      callback: () => {
+        menuOpen = false;
+        if (picked) accActivate({ provider, id: picked });
+        // 关闭后再回包：renderer 那边 await 到的就是切换后的状态
+        setImmediate(() => resolve(buildState()));
+      },
+    });
+  });
+}
+
+/** 账户集合变化后的共同收尾：active 兜底 + 布局/定时器重排 + 落盘 */
+function afterAccountsChanged() {
+  for (const p of providers.list) {
+    const list = enabledOf(p.id);
+    if (!list.length) {
+      delete config.active[p.id];
+    } else if (!list.some((a) => a.id === config.active[p.id])) {
+      config.active[p.id] = list[0].id;
+    }
+  }
+  saveConfig();
+  if (win && !win.isDestroyed() && (config.view === 'capsule' || config.view === 'panel')) {
+    applyView(config.view);   // 胶囊列数 / 面板 chips 行可能变了
+  }
+  broadcast();
+  schedule();
+  scheduleDs();
   if (tray) tray.setContextMenu(buildTrayMenu());
 }
 
@@ -786,8 +1036,7 @@ function createWindow() {
   const s = winSize('capsule');
   const p = capsulePos();
   win = new BrowserWindow({
-    // 初建先粗夹进主屏工作区（ready 时 applyView 再按最近屏精夹；y 以前没夹，副屏在上/下方时启动会出屏）
-    x: clampX(p.x, s.w), y: clampY(p.y, s.h),
+    x: clampX(p.x, s.w), y: p.y,
     width: s.w, height: s.h,
     transparent: true, frame: false,
     resizable: false, thickFrame: false, // 改尺寸在 applyView 里临时解锁，平时锁死以避免系统隐形调节柄
@@ -852,14 +1101,26 @@ function bindIpc() {
   ipcMain.handle('state:get', () => buildState());
   ipcMain.handle('cfg:save', (_e, patch) => {
     const keys = patch ? Object.keys(patch) : [];
-    log('ipc cfg:save', keys.join(','), patch && 'token' in patch ? `(token ${String(patch.token || '').length} 字符)` : '');
-    save(patch); return buildState();
+    log('ipc cfg:save', keys.join(','));
+    saveGlobal(patch); return buildState();
   });
   ipcMain.handle('refresh:now', async () => { log('ipc refresh:now'); await refresh(true); return buildState(); });
-  // 剪贴板三种凭据分别识别，渲染层按当前聚焦的输入框决定填哪个
+  // 剪贴板按 provider 声明识别：返回 { [providerId]: { [credKey]: 提取值 } }
   ipcMain.handle('clipboard:peek', () => {
     const txt = require('electron').clipboard.readText();
-    return { glm: extractToken(txt), ds: extractDsToken(txt), platform: extractPlatformToken(txt) };
+    const out = {};
+    for (const p of providers.list) {
+      const creds = {};
+      let any = false;
+      for (const c of p.credentials) {
+        const ex = (p.extractors || {})[c.key];
+        const v = ex ? ex(txt) : '';
+        creds[c.key] = v || '';
+        if (v) any = true;
+      }
+      if (any) out[p.id] = creds;
+    }
+    return out;
   });
 
   ipcMain.on('view:set', (_e, v) => {
@@ -867,9 +1128,9 @@ function bindIpc() {
     setView(['capsule', 'panel', 'settings'].includes(v) ? v : 'capsule');
     setTimeout(applyTheme, 150); // 截屏采样移出展开/收起的关键路径
   });
-  // 面板页签：GLM / DeepSeek 两个视图，窗口高度不同，切完要重算尺寸
+  // 面板 provider 页签：窗口高度可能与 chips 行有关，切完要重算尺寸
   ipcMain.on('tab:set', (_e, t) => {
-    const tab = t === 'ds' ? 'ds' : 'glm';
+    const tab = providers.byId(t) ? t : panelTabResolved();
     if (config.panelTab === tab) return;
     config.panelTab = tab;
     saveConfig();
@@ -885,6 +1146,12 @@ function bindIpc() {
     applyView(config.view);
     broadcast();
   });
+  /* ---------- 账户 CRUD（返回最新广播状态；{err} 表示操作被拒绝） ---------- */
+  ipcMain.handle('acc:add', (_e, payload) => { const r = accAdd(payload || {}); return r.err ? r : buildState(); });
+  ipcMain.handle('acc:update', (_e, payload) => { const r = accUpdate(payload || {}); return r.err ? r : buildState(); });
+  ipcMain.handle('acc:remove', (_e, payload) => { const r = accRemove(payload || {}); return r.err ? r : buildState(); });
+  ipcMain.handle('acc:activate', (_e, payload) => { const r = accActivate(payload || {}); return r.err ? r : buildState(); });
+  ipcMain.handle('acc:menu', (_e, payload) => accMenu(payload || {}));
   /* ---------- 拖拽：主进程独占光标坐标系（详见 lib/drag.js 顶部注释） ---------- */
   const DRAG_MS = 8;             // 采样节拍：约一帧一次，足够跟手又不至于刷爆 IPC/SetWindowPos
   const dragTick = () => {
@@ -923,14 +1190,17 @@ function bindIpc() {
   };
   const stopDrag = () => {
     if (!dragCtx) return;
-    const timer = dragCtx.timer;
+    const timer0 = dragCtx.timer;
     const wasMoving = !dragCtx.pending && dragging;   // 点击（未越过死区）不该触发收尾动作
+    const dirty = boxDirty;                           // 拖拽期间攒下的尺寸变化
+    boxDirty = false;
     dragCtx = null;
     dragging = false;
-    clearInterval(timer);
+    clearInterval(timer0);
     if (!wasMoving || !win || win.isDestroyed()) return;   // 点击：位置没变，不必写盘
     config.pos = { x: win.getPosition()[0], y: win.getPosition()[1] };
     saveConfig();
+    if (dirty && (config.view === 'capsule' || config.view === 'panel')) applyView(config.view);   // 松手后补上尺寸对齐
     assertTopmost();
     // 落定后再采样背景，避免拖拽尾顿（desktopCapturer 截屏有开销）
     clearTimeout(themeDebounce);
@@ -966,13 +1236,16 @@ function bindIpc() {
       try { tray && tray.setImage(nativeImage.createFromDataURL(url)); } catch { }
     }
   });
-  // 只放行两家官方域名（含任意子域）：bigmodel.cn 与 deepseek.com
-  const OPEN_OK = /^https:\/\/([a-z0-9-]+\.)*(bigmodel\.cn|deepseek\.com)(\/|$)/i;
+  // 只放行已注册 provider 声明的官方域名
+  const OPEN_OK = new RegExp('^https://([a-z0-9-]+\\.)*(' +
+    providers.list.flatMap((p) => p.domains || []).join('|') + ')(/|$)', 'i');
   ipcMain.on('open:external', (_e, u) => {
     if (typeof u === 'string' && OPEN_OK.test(u)) shell.openExternal(u);
     else log('open:external 拒绝非官方域名:', u);
   });
   ipcMain.on('app:quit', () => app.quit());
+  ipcMain.on('capsule:size', (_e, sz) => setCapsuleBox(sz));
+  ipcMain.on('panel:size', (_e, sz) => setPanelBoxH(sz && sz.h));
   ipcMain.on('renderer:ready', () => {
     rendererReady = true;
     log('renderer:ready ✓ · 静默出场不抢焦点');
@@ -995,15 +1268,19 @@ if (!gotLock) {
   app.whenReady().then(() => {
     loadConfig();
     loadDsHistory();
-    // 重启秒显：先用上次的快照与本地历史铺上，再去拉新数据
-    if (config.lastDs) { ds.balance = config.lastDs; ds.status = 'ok'; }
-    else if (config.dsToken) ds.status = 'loading';
-    refreshDsSummary();
+    if (migrated) saveConfig();   // 平铺 → accounts 的迁移立即落盘
+    // 重启秒显：先用上次的快照铺上，再去拉新数据
+    for (const a of config.accounts) {
+      const snap = config.snapshot[a.id];
+      if (snap) { const r = rtOf(a); r.data = snap; r.status = 'ok'; }
+      else if (a.enabled !== false) rtOf(a).status = 'loading';
+    }
     log('boot ·', JSON.stringify({
       electron: process.versions.electron, node: process.versions.node,
       platform: process.platform, portable: IS_PORTABLE, dev: IS_DEV,
-      hasToken: !!config.token, hasDs: !!config.dsToken, hasDsPlatform: !!config.dsPlatformToken,
-      dsSamples: dsSamples.length, savedView: config.view, pos: config.pos,
+      accounts: config.accounts.map((a) => `${a.provider}:${a.id}${a.enabled === false ? '(停用)' : ''}`),
+      dsSamples: [...dsSamples.entries()].map(([id, arr]) => `${id}:${arr.length}`).join(','),
+      savedView: config.view, pos: config.pos,
     }), '· userData =', app.getPath('userData'));
     // 立即应用自启设置（清理遗留或首启）；便携版不支持
     if (!IS_PORTABLE) app.setLoginItemSettings({ openAtLogin: !!config.autoStart, args: ['--hidden'] });
@@ -1023,17 +1300,9 @@ if (!gotLock) {
 
     // 背景明暗巡逻：浮窗不动、底下窗口切换（深↔浅）也要跟着换肤；拖拽中不采样
     setInterval(() => { if (!dragging) applyTheme(); }, 20000);
-    // 显示器热插拔/分辨率缩放变化后，把窗口收回工作区内并重采样主题。
-    // 拔屏往往只对被拔的那块屏派发 display-removed（幸存屏度量没变 → metrics-changed 不来），
-    // 三个事件都得挂，否则胶囊会停在已消失的屏幕上（看不见也点不着，只能重启）；连发用防抖合并
-    let reflowTimer = 0;
-    const reflowDisplays = () => {
-      clearTimeout(reflowTimer);
-      reflowTimer = setTimeout(() => { if (win) { applyView(config.view); applyTheme(); } }, 50);
-    };
-    screen.on('display-metrics-changed', reflowDisplays);
-    screen.on('display-removed', reflowDisplays);
-    screen.on('display-added', reflowDisplays);
+    screen.on('display-metrics-changed', () => {
+      if (win) { applyView(config.view); applyTheme(); } // 显示器变化后收回工作区内并重采样
+    });
 
     app.on('window-all-closed', () => { /* 托盘常驻，不退出 */ });
   });

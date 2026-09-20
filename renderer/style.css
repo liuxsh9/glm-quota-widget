@@ -14,10 +14,20 @@ body[data-tier="mid"]  { --g1: #fbbf24; --g2: #f97316; }
 body[data-tier="high"] { --g1: #f87171; --g2: #ef4444; }
 body.acrylic .shell    { --shell: rgba(15, 17, 24, .55); }
 
+/* 档位色下到「单个账户」：多账户时每家水位各不相同，整窗一个档位会让 A 账户的超支
+   把 B 账户也染红。挂上 data-tier 的 pane / 账户格按自己的水位取色，没挂的沿用全局档位
+   （全局档位仍然驱动托盘图标与面板头部的状态文案，不受影响） */
+#panel .pane[data-tier="low"],  #capsule .cap-acct[data-tier="low"]  { --g1: #22d3ee; --g2: #8b5cf6; }
+#panel .pane[data-tier="mid"],  #capsule .cap-acct[data-tier="mid"]  { --g1: #fbbf24; --g2: #f97316; }
+#panel .pane[data-tier="high"], #capsule .cap-acct[data-tier="high"] { --g1: #f87171; --g2: #ef4444; }
+
 /* ============ 浅色玻璃（背景为浅色时自动/手动切换） ============ */
 body.theme-light { --g1: #4f7dff; --g2: #8b5cf6; --ink: #262b38; --ink2: #4a5164; --ink3: #7a8194; }
 body.theme-light[data-tier="mid"]  { --g1: #e8a13a; --g2: #f97316; }
 body.theme-light[data-tier="high"] { --g1: #e05252; --g2: #ef4444; }
+body.theme-light #panel .pane[data-tier="low"],  body.theme-light #capsule .cap-acct[data-tier="low"]  { --g1: #4f7dff; --g2: #8b5cf6; }
+body.theme-light #panel .pane[data-tier="mid"],  body.theme-light #capsule .cap-acct[data-tier="mid"]  { --g1: #e8a13a; --g2: #f97316; }
+body.theme-light #panel .pane[data-tier="high"], body.theme-light #capsule .cap-acct[data-tier="high"] { --g1: #e05252; --g2: #ef4444; }
 body.theme-light .glass {
   background:
     url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='140' height='140' filter='url(%23n)' opacity='0.06'/%3E%3C/svg%3E"),
@@ -98,25 +108,45 @@ body.view-settings #settings { display: flex; }
   box-shadow: 0 0 8px var(--g1), 0 0 20px color-mix(in srgb, var(--g1) 45%, transparent);
 }
 
-/* ============ 胶囊（E）：双列 ============
-   左列 GLM（两条 mini bar），右列 DeepSeek（余额 + 今日消费），中间竖发丝线。
-   宽窄由主进程按「配了几家」算，这里只负责两列的显隐。 */
+/* ============ 胶囊（E）：每个 provider 一组，组里 1..N 个账户格 ============
+   组由渲染层按注册表序生成（glm 组 = 两条 mini bar，ds 组 = 余额 + 今日消费），
+   组间竖发丝线。窗口尺寸不在这里猜：内容盒是 max-content（内容多大卡片就多大），
+   渲染层实测后上报给主进程改窗口 —— 加账户、余额多一位、账户名变长都不会再挤压出边框。
+   切换布局下组里只有当前账户一格，数据体右侧挂账户 chip（点它弹原生菜单换账户）；
+   平铺布局下每个账户一格，格顶写名字，格间一条更浅的发丝线（层级低于组间的分隔线）。 */
 #capsule {
-  align-items: center;
+  align-items: stretch;
   gap: 0;
   padding: 0 11px;
+  min-height: 40px;    /* 卡片的目标厚度：内容更矮（单格 28px）也保持胶囊手感 */
+  width: max-content;
+  height: max-content;
   border-radius: 13px;
 }
-#capsule .cap-col { display: flex; align-items: center; flex: none; }
-#capsule .cap-glm { gap: 5px; }
-#capsule .cap-ds {
-  flex-direction: column; align-items: flex-end; justify-content: center;
-  gap: 1px; padding-left: 9px; line-height: 1.15;
+body.no-providers #capsule { min-width: 126px; }   /* 空态提示别缩成一条 */
+#capsule .cap-grp { display: flex; align-items: stretch; flex: none; }
+#capsule .cap-acct { display: flex; flex-direction: column; justify-content: center; flex: none; }
+#capsule .cap-data { display: flex; align-items: center; }
+#capsule .cap-glm .cap-data { gap: 5px; }
+#capsule .cap-ds .cap-data { gap: 7px; }   /* 数据体与账户 chip 之间的呼吸 */
+#capsule .cap-ds .cap-main {
+  display: flex; flex-direction: column; align-items: flex-end;
+  gap: 1px; line-height: 1.15;
 }
-#capsule .cap-sep { display: none; width: 1px; align-self: stretch; margin: 8px 0 8px 9px; background: var(--hairline); flex: none; }
-body.has-glm.has-ds #capsule .cap-sep { display: block; }
-body:not(.has-glm) #capsule .cap-glm,
-body:not(.has-ds)  #capsule .cap-ds { display: none; }
+#capsule .cap-sep { width: 1px; align-self: stretch; margin: 8px 0 8px 9px; background: var(--hairline); flex: none; }
+/* 分隔线两侧等距：线左 9px 是 sep 的 margin，线右 9px 是这一组的内边距 */
+#capsule .cap-sep + .cap-grp { padding-left: 9px; }
+/* 同一家内部的账户格之间：更浅、且上下内缩的一条线（读作「同一家的几个号」）。
+   用伪元素而不是 border：border 会跟着格子撑满整高，反而比组间线还显眼，层级就反了 */
+#capsule .cap-tile .cap-acct + .cap-acct { margin-left: 9px; padding-left: 9px; position: relative; }
+#capsule .cap-tile .cap-acct + .cap-acct::before {
+  content: ""; position: absolute; left: 0; top: 16%; bottom: 16%; width: 1px;
+  background: rgba(255, 255, 255, .07);
+}
+/* 平铺时组间分隔线满高、更亮：两家的边界要一眼看得出来 */
+#capsule.cap-tiled .cap-sep { margin: 3px 0 3px 9px; background: rgba(255, 255, 255, .17); }
+body.theme-light #capsule .cap-tile .cap-acct + .cap-acct::before { background: rgba(23, 28, 45, .11); }
+body.theme-light #capsule.cap-tiled .cap-sep { background: rgba(23, 28, 45, .22); }
 
 #capsule .rows { display: flex; flex-direction: column; gap: 3px; }
 #capsule .grp { display: flex; align-items: center; gap: 5px; line-height: 1; }
@@ -135,21 +165,48 @@ body:not(.has-ds)  #capsule .cap-ds { display: none; }
 #capsule .rows b { font-size: 12.5px; font-weight: 700; }
 #capsule .rows b::after { content: "%"; font-size: 9.5px; font-weight: 400; color: var(--ink3); }
 #capsule .glm-warn { display: none; color: #fbbf24; font-size: 11px; white-space: nowrap; }
-body.st-expired #capsule .rows { display: none; }
-body.st-expired #capsule .glm-warn { display: inline; }
+#capsule .cap-acct.st-expired .rows { display: none; }
+#capsule .cap-acct.st-expired .glm-warn { display: inline; }
 #capsule .dsbal { font-size: 13px; font-weight: 700; white-space: nowrap; }
 #capsule .dstoday { font-size: 10px; color: var(--ink3); white-space: nowrap; }
-#capsule .cap-ds.dim { opacity: .55; }
-#capsule .cap-ds.warn .dstoday { color: #fbbf24; }
-#capsule .cap-ds.warn .dsbal { color: #fbbf24; }
+#capsule .cap-acct.dim { opacity: .55; }
+#capsule .cap-acct.warn .dstoday { color: #fbbf24; }
+#capsule .cap-acct.warn .dsbal { color: #fbbf24; }
 @keyframes spin { to { transform: rotate(360deg); } }
+
+/* 胶囊多账户：切换布局下的「账户 chip」（点它弹原生菜单换账户）——
+   在数据体里占一格，宽度计入卡片，不再像旧的绝对定位角标那样骑在内容上、把内容顶出边框 */
+#capsule .acc-chip {
+  flex: none; margin-left: 2px; padding: 0 6px;
+  font-size: 9.5px; line-height: 1.6;
+  border-radius: 99px; color: var(--ink2);
+  background: rgba(255, 255, 255, .10); border: 1px solid var(--hairline);
+  max-width: 84px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+#capsule .acc-chip::after { content: "▾"; font-size: 7px; margin-left: 3px; opacity: .6; }
+#capsule .acc-chip:hover { color: var(--ink); background: rgba(255, 255, 255, .2); }
+#capsule .acc-chip:hover::after { opacity: 1; }
+body.theme-light #capsule .acc-chip { background: rgba(23, 28, 45, .08); }
+body.theme-light #capsule .acc-chip:hover { background: rgba(23, 28, 45, .16); }
+
+/* 平铺布局下的账户名行：格顶一行小字，点它把该账户设为当前账户（面板页签跟着走）。
+   [hidden] 必须显式压回：下面的 display:block 会盖掉 hidden 属性自带的 display:none */
+#capsule .cap-aname {
+  display: block; padding: 0; text-align: left; letter-spacing: .2px;
+  font-size: 9px; line-height: 1.45; color: var(--ink3);
+  max-width: 76px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+#capsule .cap-aname[hidden] { display: none; }
+#capsule .cap-aname:hover { color: var(--ink); }
+/* DS 的数字右对齐，名字跟着贴右：名字被 max-width 截短时也不会和数字错开 */
+#capsule .cap-ds .cap-aname { text-align: right; align-self: flex-end; }
 
 /* 胶囊的「哪边都没配」态：整条提示居中 */
 #capsule .hint { display: none; align-items: center; gap: 7px; width: 100%; justify-content: center; font-size: 12.5px; }
 #capsule .hint .warn { color: #fbbf24; }
 #capsule .hint .go { color: var(--g1); }
 body.no-providers #capsule .hint-all { display: flex; }
-body.st-loading #capsule { opacity: .88; }
+#capsule .cap-acct.st-loading { opacity: .88; }
 
 /* ============ 面板（B） ============ */
 #panel { flex-direction: column; padding: 16px 18px 16px; border-radius: 16px; position: relative; }
@@ -165,7 +222,9 @@ body.st-loading #capsule { opacity: .88; }
 #panel .ico:hover { color: var(--ink); background: rgba(255, 255, 255, .09); }
 #panel .ico.spin { animation: spin 1s linear infinite; color: var(--g1); }
 
-#panel .blk { padding: 13px 0 4px; }
+/* 12px 与页头下边距（phead 的 padding-bottom）对称；DS 页签的 .pane-ds 也是 12px ——
+   两个页签的第一行（大百分比 / 总余额）离上方距离必须一致 */
+#panel .blk { padding: 12px 0 4px; }
 #panel .row { display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 7px; }
 #panel .pct { display: flex; align-items: baseline; }
 #panel .pct b {
@@ -202,7 +261,8 @@ body.st-loading #capsule { opacity: .88; }
 #panel .pbar i.fw { width: calc(var(--pw, 0) * 1%); }
 
 /* ============ 预期进度（方案 D）：幽灵斜纹段 + 前沿亮线 ============
-   --pace5/--paceW = 按时间均摊，此刻应已用的百分比（每秒随倒计时更新）
+   --pace5/--paceW = 按时间均摊，此刻应已用的百分比（每秒随倒计时更新）；
+   变量挂在 pane / 胶囊列自己的根节点上（scoped，多实例互不串数）
    亮线带光晕+描边，领先时立在空轨上、超支时压在渐变填充上，双主题均清晰 */
 #panel .pbar .ghost, #capsule .bar .ghost {
   position: absolute; inset: 0 auto 0 0; border-radius: 99px; z-index: 0;
@@ -225,7 +285,8 @@ body.st-loading #capsule { opacity: .88; }
 
 /* ============ 超预期提醒（需求 2）============
    --over5/--overW = max(0, 实际% − 预期%)，由渲染层每秒算；该窗口没超支时就是 0 宽。
-   红橙段直接画在「预期位置 → 实际位置」之间：一眼看出超出了多少，而不是只知道「超了」。 */
+   红橙段直接画在「预期位置 → 实际位置」之间：一眼看出超出了多少，而不是只知道「超了」。
+   data-pace 挂在 pane / 胶囊列根节点上（GLM 视图自己的状态，不牵连别家）。 */
 #panel .pbar .ovr, #capsule .bar .ovr {
   position: absolute; top: 0; bottom: 0; z-index: 2; border-radius: 99px;
   background: linear-gradient(90deg, rgba(251, 146, 60, .6), rgba(248, 113, 113, .95));
@@ -234,19 +295,21 @@ body.st-loading #capsule { opacity: .88; }
 }
 #panel .pbar .ovr.o5, #capsule .bar .ovr.o5 { left: calc(var(--pace5, 0) * 1%); width: calc(var(--over5, 0) * 1%); }
 #panel .pbar .ovr.oW, #capsule .bar .ovr.oW { left: calc(var(--paceW, 0) * 1%); width: calc(var(--overW, 0) * 1%); }
-body[data-pace="over"] #panel .pbar .ovr,
-body[data-pace="over"] #capsule .bar .ovr { opacity: 1; }
+#panel .pane[data-pace="over"] .pbar .ovr,
+#capsule .cap-acct[data-pace="over"] .bar .ovr { opacity: 1; }
 
-/* 超预期时的整机配色：只在低档位改色，不与「到阈值变琥珀 / 变红」抢语义 */
-body[data-pace="over"][data-tier="low"] { --g1: #fbbf24; --g2: #f97316; }
-body.theme-light[data-pace="over"][data-tier="low"] { --g1: #e8a13a; --g2: #f97316; }
-body[data-pace="over"] #panel .pbar .edge,
-body[data-pace="over"] #capsule .bar .edge {
+/* 超预期时的配色：只在低档位改色，不与「到阈值变琥珀 / 变红」抢语义（档位见文件开头） */
+#panel .pane[data-tier="low"][data-pace="over"],
+#capsule .cap-acct[data-tier="low"][data-pace="over"] { --g1: #fbbf24; --g2: #f97316; }
+body.theme-light #panel .pane[data-tier="low"][data-pace="over"],
+body.theme-light #capsule .cap-acct[data-tier="low"][data-pace="over"] { --g1: #e8a13a; --g2: #f97316; }
+#panel .pane[data-pace="over"] .pbar .edge,
+#capsule .cap-acct[data-pace="over"] .bar .edge {
   background: #fbbf24;
   box-shadow: 0 0 5px rgba(251, 191, 36, .95), 0 0 0 1px rgba(8, 10, 16, .5);
 }
-body.theme-light[data-pace="over"] #panel .pbar .edge,
-body.theme-light[data-pace="over"] #capsule .bar .edge {
+body.theme-light #panel .pane[data-pace="over"] .pbar .edge,
+body.theme-light #capsule .cap-acct[data-pace="over"] .bar .edge {
   background: #d97706;
   box-shadow: 0 0 5px rgba(255, 255, 255, .95), 0 0 0 1px rgba(255, 255, 255, .8);
 }
@@ -263,7 +326,7 @@ body.theme-light #panel .pct .overchip { color: #b45309; background: rgba(249, 1
 #panel .blk-note .notetxt { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 #panel .blk-note .overtxt { color: #fdba74; }
 body.theme-light #panel .blk-note .overtxt { color: #b45309; }
-body:not([data-pace="over"]) #panel .blk-note .overtxt { display: none; }
+#panel .pane:not([data-pace="over"]) .blk-note .overtxt { display: none; }
 
 /* 胶囊 mini bar 版本：更细的斜纹与亮线 */
 #capsule .bar { position: relative; overflow: visible; }
@@ -320,10 +383,10 @@ body.theme-light #panel .ptip small { color: #7a8194; }
   background: rgba(251, 191, 36, .88); border: 1px solid rgba(251, 191, 36, .25);
 }
 #panel .banner a { color: #fcd34d; font-weight: 600; text-decoration: underline; cursor: pointer; }
-/* 横幅按「当前页签对应的 provider」状态显示，两个 provider 互不干扰 */
+/* 横幅按「当前页签对应的 provider」状态显示，各 provider 互不干扰 */
 body.bn-expired #panel .banner-expired,
 body.bn-retry   #panel .banner-retry { display: flex; }
-body.bn-expired #panel .pane-glm .blk { opacity: .45; }
+#panel .pane.acc-expired .blk { opacity: .45; }
 
 /* ============ 峰谷时段徽标 ============
    只报「高峰 / 空闲」，配色刻意压得很低（低饱和 + 低透明度 + 不加动效），
@@ -357,20 +420,46 @@ body.theme-light .chip.none { background: rgba(23, 28, 45, .04); }
 body.theme-light #panel .tabs { background: rgba(23, 28, 45, .07); }
 body.theme-light #panel .tab.on { background: rgba(255, 255, 255, .9); color: #262b38; }
 
-#panel .pane { display: none; flex-direction: column; }
-body.tab-glm #panel .pane-glm,
-body.tab-ds  #panel .pane-ds { display: flex; }
+/* 两个页签叠在同一个 grid 格子里：容器高度**自动**等于两者里高的那个（切页签零位移是结构保证，
+   不靠量），非当前的用 visibility 藏（仍在布局里，所以它的高度照样参与）。早先"临时把页签挪到
+   屏幕外量高度"的做法改过 DOM，会把页签永久留在脱流隐藏状态 —— 只剩页头按钮、下面一片空白。 */
+#panel #panes { flex: none; display: grid; grid-template-columns: 1fr; grid-auto-rows: auto; min-height: 0; }
+#panel .pane { grid-area: 1 / 1; display: flex; flex-direction: column; visibility: hidden; }
+#panel .pane.on { visibility: visible; }
+#panel .pane-glm .blk-note { margin-top: auto; }
+
+/* ============ 账户 chips 行 ============
+   某家配了多个账户才出现（行高恒定，切页签窗口零位移）；单账户用户永远看不到它 */
+/* flex: none —— 面板是固定高的 flex 列，而 overflow-x:auto 让这一行的最小高度是 0，
+   于是它成了唯一会被压缩的项：账户 tag 底部被啃掉几个像素（看着像被裁断）。窗口高度按
+   实测内容给足，这一行永远不该被压 */
+#panel .acc-row {
+  display: flex; align-items: center; gap: 5px; padding-top: 9px;
+  flex: none; flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none;
+}
+#panel .acc-row[hidden] { display: none; }   /* [hidden] 会被上面的 display:flex 覆盖，必须显式压回 */
+#panel .acc-row::-webkit-scrollbar { display: none; }
+#panel .acc-chip {
+  font-size: 10.5px; line-height: 1.5; padding: 1px 9px 2px;
+  border-radius: 99px; color: var(--ink3); white-space: nowrap; flex: none;
+  background: rgba(255, 255, 255, .06); border: 1px solid var(--hairline);
+}
+#panel .acc-chip:hover { color: var(--ink2); }
+#panel .acc-chip.on { color: var(--ink); font-weight: 600; background: rgba(255, 255, 255, .12); }
+#panel .acc-chip-off { opacity: .45; }
+body.theme-light #panel .acc-chip { background: rgba(23, 28, 45, .05); }
+body.theme-light #panel .acc-chip.on { background: rgba(255, 255, 255, .9); color: #262b38; }
 
 /* ============ DeepSeek 视图 ============
-   强调色自成一套：GLM 的档位/超预期配色不该染到 DeepSeek 视图上（两家的「水位」无关） */
-#panel .pane-ds { padding-top: 10px; --g1: #22d3ee; --g2: #8b5cf6; }
-body.theme-light #panel .pane-ds { --g1: #4f7dff; --g2: #8b5cf6; }
+   强调色由渲染层按 meta.accent 注入（fixed 型 provider 自成一套）：
+   GLM 的档位/超预期配色不该染到 DeepSeek 视图上（两家的「水位」无关） */
+#panel .pane-ds { padding-top: 12px; }   /* 与 GLM 的 .blk padding-top 对齐（见上） */
 #panel .ds-headwrap { position: relative; }
 #panel .ds-top { display: flex; align-items: baseline; gap: 8px; }
 #panel .ds-bal { display: flex; align-items: baseline; cursor: pointer; flex: none; border-radius: 6px; }
 #panel .ds-bal:hover .eye { opacity: .75; }
 #panel .ds-bal .eye { margin-left: 6px; font-size: 11px; opacity: .32; align-self: center; transition: opacity .15s; }
-body.ds-masked #panel .ds-bal b {
+#panel .pane-ds.ds-masked .ds-bal b {
   letter-spacing: 2px;
   background: none; -webkit-text-fill-color: var(--ink3); color: var(--ink3);
 }
@@ -552,6 +641,58 @@ body.theme-light #settings .shead .savetip { color: #2f8a63; }
 #settings .tstat.na { color: var(--ink3); }
 #settings .clr { margin-left: auto; color: var(--ink3); font-size: 11px; }
 #settings .clr:hover { color: #f87171; }
+
+/* ---- 账户管理（按 provider 分段，由 settings.js 生成） ---- */
+#settings .acc-list { display: flex; flex-direction: column; gap: 4px; margin-top: 8px; }
+#settings .acc-row {
+  display: flex; align-items: center; gap: 7px;
+  padding: 6px 9px; border-radius: 9px;
+  background: rgba(255, 255, 255, .04); border: 1px solid var(--hairline);
+}
+body.theme-light #settings .acc-row { background: rgba(23, 28, 45, .03); }
+#settings .acc-row.off { opacity: .55; }
+#settings .adot { width: 7px; height: 7px; border-radius: 50%; flex: none; background: var(--ink3); }
+#settings .adot.ok { background: #4ade80; box-shadow: 0 0 6px rgba(74, 222, 128, .6); }
+#settings .adot.bad { background: #f87171; }
+#settings .aname { font-size: 12px; color: var(--ink); font-weight: 600; max-width: 88px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#settings .atail { font-size: 10px; color: var(--ink3); font-family: ui-monospace, Consolas, monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#settings .aword { font-size: 10px; margin-left: auto; flex: none; }
+#settings .aword.ok { color: #4ade80; }
+#settings .aword.bad { color: #f87171; }
+#settings .aword.na { color: var(--ink3); }
+#settings .arow-btn { flex: none; font-size: 10.5px; color: var(--ink3); padding: 1px 5px; border-radius: 5px; }
+#settings .arow-btn:hover { color: var(--ink); background: rgba(255, 255, 255, .09); }
+#settings .arow-btn.warn:hover { color: #f87171; }
+#settings .acc-add {
+  margin-top: 7px; font-size: 11.5px; color: var(--g1);
+  padding: 4px 9px; border-radius: 8px; border: 1px dashed rgba(255, 255, 255, .18);
+  align-self: flex-start;
+}
+#settings .acc-add:hover { background: rgba(255, 255, 255, .06); }
+body.theme-light #settings .acc-add { border-color: rgba(23, 28, 45, .2); }
+#settings .acc-form {
+  margin-top: 9px; padding: 10px 11px 12px; border-radius: 10px;
+  background: rgba(255, 255, 255, .04); border: 1px solid var(--hairline);
+}
+body.theme-light #settings .acc-form { background: rgba(23, 28, 45, .03); }
+#settings .acc-form .clab { margin-top: 9px; }
+#settings .acc-form .clab:first-of-type { margin-top: 2px; }
+#settings .aname-input {
+  width: 100%; margin-top: 5px; border-radius: 8px; padding: 6px 8px;
+  background: rgba(0, 0, 0, .35); border: 1px solid rgba(255, 255, 255, .12);
+  color: var(--ink); font-size: 12px;
+}
+#settings .aname-input:focus { outline: 1px solid #5b8cff; border-color: #5b8cff; }
+/* 表单提交被拒（凭据识别不出）时的红字提示：留在按钮上方，改完再提交 */
+#settings .acc-form .formerr {
+  margin: 10px 0 0; font-size: 11.5px; line-height: 1.6;
+  color: #f87171;
+}
+body.theme-light #settings .acc-form .formerr { color: #c2410c; }
+body.theme-light #settings .aname-input { background: rgba(255, 255, 255, .6); border-color: rgba(23, 28, 45, .16); color: #262b38; }
+#settings .frow { display: flex; align-items: center; min-height: 18px; }
+#settings .fstat { font-size: 10.5px; color: var(--ink3); }
+#settings .acc-form .gdwrap { margin-top: 6px; }
 
 #settings .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 4px; }
 #settings .grid.one { grid-template-columns: 1fr; }

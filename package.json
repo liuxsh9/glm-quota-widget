@@ -1,8 +1,8 @@
 {
   "name": "glm-quota-widget",
   "productName": "GLM 用量挂件",
-  "version": "0.5.0",
-  "description": "用量悬浮挂件：GLM Coding Plan 5小时/周配额 + DeepSeek 官方 API 余额/消费，托盘常驻（quota & API spend floating widget）",
+  "version": "0.6.0",
+  "description": "用量悬浮挂件：多账户监控 GLM Coding Plan 5小时/周配额 + DeepSeek 官方 API 余额/消费，provider 可扩展，托盘常驻",
   "main": "main.js",
   "author": "liuxsh9",
   "license": "MIT",
@@ -22,6 +22,7 @@
     "dist:portable": "electron-builder --win portable",
     "pack": "electron-builder --dir",
     "test:deepseek": "node test/deepseek.test.js",
+    "test:providers": "node test/providers.test.js",
     "test:main": "node test/main.test.js"
   },
   "devDependencies": {
@@ -33,6 +34,7 @@
     "productName": "GLM-Usage-Widget",
     "directories": { "output": "dist", "buildResources": "build" },
     "afterPack": "build/afterPack.js",
+    "afterAllArtifactBuild": "build/afterArtifacts.js",
     "electronLanguages": ["zh-CN", "en-US"],
     "files": ["main.js", "preload.js", "lib/**", "renderer/**", "assets/*.png"],
     "win": {

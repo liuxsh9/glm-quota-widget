@@ -8,6 +8,15 @@ try {
     save: (patch) => ipcRenderer.invoke('cfg:save', patch),
     refreshNow: () => ipcRenderer.invoke('refresh:now'),
     clipboardPeek: () => ipcRenderer.invoke('clipboard:peek'),
+    // 账户 CRUD：都直接返回广播用的最新状态（省一次等待）
+    accAdd: (p) => ipcRenderer.invoke('acc:add', p),
+    accUpdate: (p) => ipcRenderer.invoke('acc:update', p),
+    accRemove: (p) => ipcRenderer.invoke('acc:remove', p),
+    accActivate: (p) => ipcRenderer.invoke('acc:activate', p),
+    accMenu: (p) => ipcRenderer.invoke('acc:menu', p),   // 原生弹出菜单选账户，关闭后返回新状态
+    // 胶囊实测尺寸上报：窗口尺寸以渲染层画出来的为准（宽度写死会被内容撑破）
+    capsuleSize: (s) => ipcRenderer.send('capsule:size', s),
+    panelSize: (s) => ipcRenderer.send('panel:size', s),
     setView: (v) => ipcRenderer.send('view:set', v),
     setTab: (t) => ipcRenderer.send('tab:set', t),
     setZoom: (z) => ipcRenderer.send('zoom:set', z),

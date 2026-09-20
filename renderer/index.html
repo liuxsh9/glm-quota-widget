@@ -8,96 +8,29 @@
 </head>
 <body class="view-capsule" data-tier="low" data-pace="ok">
 
-<!-- E · 迷你胶囊（常驻形态）：左 GLM 两条 mini bar，右 DeepSeek 余额 + 今日消费 -->
+<!-- E · 迷你胶囊（常驻形态）：每家 provider 一列（顺序=注册表序），列由渲染层生成 -->
 <section id="capsule" class="shell glass">
-  <div class="cap-col cap-glm">
-    <span class="dot"></span>
-    <div class="rows">
-      <div class="grp"><span class="lab">5h</span><div class="bar"><span class="ghost g5"></span><i class="f5"></i><span class="ovr o5"></span><span class="edge e5"></span></div><b class="pv5">–</b></div>
-      <div class="grp"><span class="lab">周</span><div class="bar"><span class="ghost gW"></span><i class="fw"></i><span class="ovr oW"></span><span class="edge eW"></span></div><b class="pvw">–</b></div>
-    </div>
-    <span class="glm-warn">⚠ 已失效</span>
-  </div>
-  <div class="cap-sep"></div>
-  <div class="cap-col cap-ds">
-    <b class="dsbal">–</b>
-    <span class="dstoday">–</span>
-  </div>
   <div class="hint hint-all"><span class="go">◈ 点击设置 Token ›</span></div>
 </section>
 
-<!-- B · 展开面板：顶部 GLM / DeepSeek 页签，两个视图共用一个窗口 -->
+<!-- B · 展开面板：页签按 provider 生成，视图由 panes.js 的工厂渲染 -->
 <section id="panel" class="shell glass">
   <div class="phead">
     <span class="dot"></span>
-    <div class="tabs" role="tablist">
-      <button class="tab" id="tabGlm" role="tab">GLM <b class="lvl">–</b></button>
-      <button class="tab" id="tabDs" role="tab">DeepSeek</button>
-    </div>
+    <div class="tabs" id="tabs" role="tablist"></div>
     <span class="upd" id="upd">–</span>
     <button class="ico" id="refBtn2" title="立即刷新">⟳</button>
     <button class="ico" id="gearBtn" title="设置">⚙</button>
   </div>
+  <div class="acc-row" id="accRow" hidden></div>
+  <div id="panes"></div>
 
-  <!-- GLM 视图（与 v0.4.x 一致） -->
-  <div class="pane pane-glm">
-    <div class="blk blk-q" data-win="five">
-      <div class="row">
-        <div>
-          <div class="pct"><b class="pv5">–</b><i>%</i><span class="overchip">▲ 超预期</span></div>
-          <div class="sub">5小时额度 · <span class="cd5">–</span>后重置</div>
-        </div>
-        <div class="pts">积分<br><b class="u5">–</b> / <span class="t5">–</span><br><span class="rt5">–</span></div>
-      </div>
-      <div class="pbar"><span class="ghost g5"></span><i class="f5"></i><span class="ovr o5"></span><span class="edge e5"></span><div class="ptip"></div></div>
-    </div>
-    <div class="blk blk-q" data-win="week">
-      <div class="row">
-        <div>
-          <div class="pct"><b class="pvw">–</b><i>%</i><span class="overchip">▲ 超预期</span></div>
-          <div class="sub">周额度 · <span class="cdw">–</span>后重置</div>
-        </div>
-        <div class="pts">积分<br><b class="uw">–</b> / <span class="tw">–</span><br><span class="rtw">–</span></div>
-      </div>
-      <div class="pbar"><span class="ghost gW"></span><i class="fw"></i><span class="ovr oW"></span><span class="edge eW"></span><div class="ptip"></div></div>
-    </div>
-    <div class="blk blk-note"><span class="notetxt"><span class="overtxt">▲ = 实际已超出预期</span></span><span class="chip" id="glmChip"><i class="pdot"></i><span class="ctxt">—</span></span></div>
-  </div>
-
-  <!-- DeepSeek 视图 -->
-  <div class="pane pane-ds">
-    <div class="ds-headwrap">
-      <div class="ds-top">
-        <div class="ds-bal" id="dsBal" title="点击显示 / 隐藏金额"><i class="cur">¥</i><b class="dstotal">–</b><span class="eye">👁</span></div>
-        <div class="ds-sub" id="dsSub">账户余额</div>
-        <button class="qbtn" id="dsInfo" title="数据来源与口径">?</button>
-      </div>
-      <div class="ds-more" id="dsSrc" hidden></div>
-    </div>
-    <div class="ds-stats" id="dsStats">
-      <div><span>今日</span><b class="ds-today">–</b></div>
-      <div><span>近 7 天</span><b class="ds-wk">–</b></div>
-      <div><span>本月</span><b class="ds-mo">–</b></div>
-    </div>
-    <div class="ds-chart-head">
-      <span class="ds-range" id="dsRange">近 7 天消费</span>
-      <div class="seg">
-        <button class="segb" id="dsR1">1时</button>
-        <button class="segb" id="dsR24">24时</button>
-        <button class="segb" id="dsR7">7天</button>
-        <button class="segb" id="dsR30">30天</button>
-      </div>
-    </div>
-    <div class="ds-chart" id="dsChart"><div class="dstrip" id="dsTip"></div></div>
-    <div class="ds-foot"><span class="dsleft" id="dsLeft">–</span><span class="chip" id="dsChip"><i class="pdot"></i><span class="ctxt">—</span></span><span class="dsright" id="dsRight"></span></div>
-  </div>
-
-  <div class="banner banner-expired">⚠ Token 已失效 <a id="fixBtn">去更新 ›</a></div>
+  <div class="banner banner-expired">⚠ 凭据已失效 <a id="fixBtn">去更新 ›</a></div>
   <div class="banner banner-retry"><span id="errMsg">更新失败</span> <a id="retryBtn">重试 ›</a></div>
   <div id="zoomTip" hidden></div>
 </section>
 
-<!-- G · 设置（单页滚动，按 provider 分段） -->
+<!-- G · 设置：provider 分段由 settings.js 按 GLMPROV 元数据生成，通用段静态 -->
 <section id="settings" class="shell glass">
   <div class="shead">
     <button class="back" id="backBtn">‹ 返回</button>
@@ -106,52 +39,10 @@
     <button class="btn pri hsave" id="saveBtn2">保存并刷新</button>
   </div>
   <div class="sbody">
-    <h4 class="sech">GLM Coding Plan</h4>
-    <label class="clab" for="tok">API Key / 登录 Cookie</label>
-    <textarea id="tok" spellcheck="false" placeholder="粘贴 API Key（推荐，长期有效），或整段 Cookie / bigmodel_token_production 的值"></textarea>
-    <span class="clipchip" id="clipchip">⟳ 检测到剪贴板中的 GLM 凭据，点击填入</span>
-    <div class="tstat na" id="tstat"><span id="tstatTxt">未配置</span><button class="clr" id="clrBtn">清除</button></div>
-    <details class="gdwrap"><summary>怎么获取？（API Key 一劳永逸，Cookie 约 3 天失效）</summary>
-      <ol class="guide">
-        <li>推荐 <b>API Key</b>：登录 bigmodel.cn → 控制台「<b>API Keys</b>」→ 创建/复制 Key</li>
-        <li>粘贴到上方输入框 → 点「保存并刷新」，长期有效无需再管</li>
-        <li>也可用登录 Cookie：官网按 <b>F12</b> → 「<b>应用 / Application</b>」→ 存储 → <b>Cookie</b> → bigmodel.cn</li>
-        <li>找 <b>bigmodel_token_production</b> → 双击「值」列全选 → <b>Ctrl+C</b> 复制（整段 Cookie 也可，自动提取）</li>
-        <li>Cookie 约 3 天失效，挂件会变红提醒，届时同流程粘贴新值即可</li>
-      </ol>
-    </details>
-    <div class="subh">配额提醒</div>
-    <div class="grid one">
-      <label>提醒阈值（%）
-        <input type="number" id="threshold" min="1" max="99" step="1" value="80">
-      </label>
-    </div>
-    <p class="hintline">到阈值进度条变琥珀并弹通知；再高 10 个点变红。</p>
-    <label class="tgl"><input type="checkbox" id="nreset">5 小时额度重置时提醒</label>
-    <label class="tgl"><input type="checkbox" id="pacealert" checked>用量超过预期进度时变色提醒</label>
-    <p class="linkrow"><a href="#" id="webBtn">打开 bigmodel.cn 官网 ›</a></p>
-
-    <h4 class="sech">DeepSeek 官方 API</h4>
-    <label class="clab" for="dstok">API Key（余额，长期有效）</label>
-    <textarea id="dstok" spellcheck="false" placeholder="粘贴 sk- 开头的 API Key，形如 sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"></textarea>
-    <span class="clipchip" id="clipchipDs">⟳ 检测到剪贴板中的 DeepSeek Key，点击填入</span>
-    <div class="tstat na" id="dststat"><span id="dststatTxt">未配置</span><button class="clr" id="clrDsBtn">清除</button></div>
-    <label class="clab" for="dsplat">平台令牌（选配，用于精确账单与逐模型用量）</label>
-    <textarea id="dsplat" spellcheck="false" placeholder="粘贴 platform.deepseek.com 的 userToken（整段 JSON 或裸 token 都可以）"></textarea>
-    <div class="tstat na" id="dspstat"><span id="dspstatTxt">未配置 · 消费数字走本地余额差值</span><button class="clr" id="clrDsPlatBtn">清除</button></div>
-    <p class="linkrow"><a href="#" id="dsWebBtn">打开 platform.deepseek.com 用量页 ›</a></p>
-    <details class="gdwrap"><summary>怎么获取？（不配也能用：只配 API Key 即可看余额）</summary>
-      <ol class="guide">
-        <li>登录 platform.deepseek.com → <b>F12</b> → 「<b>应用 / Application</b>」→ <b>Local Storage</b> → platform.deepseek.com</li>
-        <li>找到 <b>userToken</b> 键 → 复制整段值（形如 <code>{"value":"…"}</code>，自动提取其中的 token）</li>
-        <li>粘贴到上方 → 保存，即可看到精确的每日消费、本月账单与逐模型 token</li>
-        <li>该令牌是<b>平台登录态</b>，会过期（比 GLM 的 Cookie 还不稳定），过期后挂件会提示，重复上述步骤即可</li>
-        <li>不配置时，消费数字由<b>本机余额差值</b>推算：挂件没运行的时段补不回来，头几天数字会偏少</li>
-      </ol>
-    </details>
+    <div id="provSecs"></div>
 
     <h4 class="sech">通用</h4>
-    <p class="hintline">本段的开关与下拉都是<b>改完立即生效并保存</b>；只有上面的凭据才需要点「保存并刷新」。</p>
+    <p class="hintline">本段的开关与下拉都是<b>改完立即生效并保存</b>；账户凭据在各家分段里保存。</p>
     <div class="grid">
       <label>配额 / 账单刷新
         <select id="interval">
@@ -169,30 +60,28 @@
           <option value="light">强制浅色玻璃</option>
         </select>
       </label>
-    </div>
-    <p class="hintline">GLM 配额与 DeepSeek 平台账单走这个频率。这两个接口有限流/风控，所以不建议更快。</p>
-    <label class="tgl"><input type="checkbox" id="dsfast" checked>DeepSeek 余额高频采样</label>
-    <div class="grid one" id="dsfastrow">
-      <label>采样间隔
-        <select id="dspoll">
-          <option value="1">每 1 分钟</option>
-          <option value="2" selected>每 2 分钟（推荐）</option>
-          <option value="5">每 5 分钟</option>
-          <option value="10">每 10 分钟</option>
+      <label id="caplayoutWrap">胶囊布局
+        <select id="caplayout">
+          <option value="switch" selected>切换（只显示当前账户）</option>
+          <option value="all">平铺（每个账户各一格）</option>
         </select>
       </label>
     </div>
-    <p class="hintline">余额是 DeepSeek <b>实时读数</b>的唯一来源——「最近 5 分钟」「1 小时柱图」的分辨率就等于这个间隔。<br>关掉则余额跟上面的刷新频率一起走（那时细粒度柱图会变稀）。</p>
+    <p class="hintline">配额与平台账单走这个频率。这些接口有限流/风控，所以不建议更快。</p>
+    <p class="hintline" id="caplayoutHint" hidden>「切换」时点胶囊上的账户标签可切换账户，滚轮也能直接切；「平铺」把每个账户各排一格，一眼看全（点账户名可把它设为当前账户）。</p>
     <label class="tgl"><input type="checkbox" id="autostart" checked>开机自动启动</label>
     <label class="tgl"><input type="checkbox" id="ontop" checked>悬浮窗置顶显示</label>
     <div class="btns">
       <button class="btn pri" id="saveBtn">保存并刷新</button>
     </div>
-    <p class="note">自动刷新带 ±20s 随机抖动，另有托盘「立即刷新」；请求直连 open.bigmodel.cn / api.deepseek.com，不会被 CORS 拦截。所有凭据只保存在本机 <code>config.json</code>，不会外发。</p>
+    <p class="note">自动刷新带 ±20s 随机抖动，另有托盘「立即刷新」；请求直连各官方域名，不会被 CORS 拦截。所有凭据只保存在本机 <code>config.json</code>，不会外发。</p>
   </div>
 </section>
 
 <script src="../lib/format.js"></script>
+<script src="../lib/providers/meta.js"></script>
+<script src="panes.js"></script>
+<script src="settings.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

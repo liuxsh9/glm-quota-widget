@@ -3,10 +3,11 @@
 [![Release](https://github.com/liuxsh9/glm-quota-widget/actions/workflows/release.yml/badge.svg)](https://github.com/liuxsh9/glm-quota-widget/actions/workflows/release.yml)
 [![Download](https://img.shields.io/github/v/release/liuxsh9/glm-quota-widget?label=%E4%B8%8B%E8%BD%BD)](https://github.com/liuxsh9/glm-quota-widget/releases/latest)
 
-Windows 桌面悬浮挂件：一屏盯住 **GLM Coding Plan 的 5 小时/周额度** 与 **DeepSeek 官方 API 的余额/消费**。
+Windows 桌面悬浮挂件：一屏盯住 **GLM Coding Plan 的 5 小时/周额度** 与 **DeepSeek 官方 API 的余额/消费**，**每家可挂多个账户**。
 
-- **平时隐身**：屏幕角落一枚 188×40 双列迷你胶囊（左 GLM 两条进度条、右 DeepSeek 余额+今日消费；只配一家时自动收窄到 152），可拖到任意位置、始终置顶
-- **点击展开**：暗夜玻璃风面板，顶部 **GLM / DeepSeek 页签**切换
+- **多账户**：同一云的多个账号（如 GLM 主号+备用号）各自独立监控。胶囊两种布局任选：**切换**（只显示当前账户，点「主号 ▾」弹账户菜单，滚轮也能切）或**平铺**（每个账户各占一格，一眼看全）。面板顶部一行账户 chips 同样可切；胶囊与面板按**各账户自己的水位**上色，托盘图标取全局最差，阈值提醒带账户名
+- **平时隐身**：屏幕角落一枚 40px 高的迷你胶囊（左 GLM 两条进度条、右 DeepSeek 余额+今日消费），可拖到任意位置、始终置顶。宽窄由内容决定（单账户 ≈183px），窗口尺寸以渲染层的**实测值**为准 —— 余额多一位、账户名变长、多挂几个账户都不会挤压出边框
+- **点击展开**：暗夜玻璃风面板，顶部页签按 provider 自动生成
   - GLM：大数字百分比、积分用量、重置倒计时
   - DeepSeek：账户余额、今日/近 7 天/本月消费、消费柱状图（**1 小时按 5 分钟** / 24 小时按小时 / 7 天 / 30 天，四档）、近 1 小时消费、日均与预估可用天数、本月 token 与缓存命中率（后两项收在「?」里）
   - **两个页签同高**：切换时窗口尺寸一个像素都不动，不跳
@@ -27,6 +28,10 @@ Windows 桌面悬浮挂件：一屏盯住 **GLM Coding Plan 的 5 小时/周额�
 <img src="docs/panel-light.png" alt="浅色主题" width="400"> <img src="docs/settings.png" alt="设置页" width="290">
 
 <sub>左：背景为浅色时自动切换浅色玻璃 · 右：设置页按「这个设置只影响谁」分三段，开关改完立即生效</sub>
+
+<img src="docs/capsule-multi.png" alt="多账户：切换布局 / 平铺布局" width="620">
+
+<sub>多账户的两种胶囊布局：上=**切换**（只显示当前账户，点「主号 ▾」弹账户菜单）· 下=**平铺**（格顶写账户名、每个账户按自己的水位上色：青=正常、琥珀=接近阈值、红=已超标；同一家的账户之间是内缩的浅线，两家之间是更亮的竖线）</sub>
 
 > 截图由 `python3 tools/shots.py` 生成：**全部使用假数据**（余额、消费、token、凭据尾号都是编的），
 > 不读取任何真实凭据、不联网，时钟也钉在固定时刻以保证可复现。
@@ -90,7 +95,7 @@ Authorization: <API Key 或 bigmodel_token_production 的 JWT>   # 无 Bearer �
 
 | 文件 | 说明 |
 |---|---|
-| `GLM-Usage-Widget-x.y.z-win64.zip` | **推荐 · 目录版**：解压一次到任意文件夹，双击 `GLM-Usage-Widget.exe`，约 1 秒启动 |
+| `GLM-Usage-Widget-x.y.z-win64.zip` | **推荐 · 目录版**：解压得到一层 `GLM-Usage-Widget/` 文件夹（不散落文件），双击里面的 `GLM-Usage-Widget.exe`，约 1 秒启动 |
 | `GLM-Usage-Widget x.y.z.exe` | 便携版：单文件 ~80MB，即拷即用，但**每次启动都要自解压到临时目录，冷启动需 5~20 秒**，适合 U 盘应急 |
 
 安装版（NSIS Setup，带桌面快捷方式/开机自启）需在 **Windows 机器**上执行 `npm install && npm run dist:win` 生成（Linux 交叉构建安装版需要 wine）。
@@ -109,12 +114,21 @@ Authorization: <API Key 或 bigmodel_token_production 的 JWT>   # 无 Bearer �
 
 | 段 | 放什么 |
 |---|---|
-| **GLM Coding Plan** | 凭据、状态、获取指引；**配额提醒**（阈值 / 重置提醒 / 超预期变色）；官网入口 |
-| **DeepSeek 官方 API** | 两个凭据与各自状态、获取指引、用量页入口 |
-| **通用** | 刷新频率 + DeepSeek 余额高频采样、界面主题、开机自启、窗口置顶 |
+| **GLM Coding Plan** | 账户列表（添加/编辑/停用/删除，多账户各带状态点与凭据尾号）；**配额提醒**（阈值 / 重置提醒 / 超预期变色）；官网入口 |
+| **DeepSeek 官方 API** | 账户列表（同上，每账户含 API Key + 选配平台令牌两个字段）；余额高频采样；用量页入口 |
+| **通用** | 刷新频率、界面主题、**胶囊布局**、开机自启、窗口置顶（胶囊布局只在配了多账户时出现） |
+
+**多账户**：每家 provider 可添加任意多个账户（「＋ 添加账户」），各有独立凭据、独立状态、独立消费历史。
+胶囊有两种布局（设置 › 通用 › 胶囊布局）：
+
+- **切换**（默认）：胶囊上只显示「当前账户」，数据右侧多了个账户标签——点它弹出账户菜单选人，或者直接在胶囊上**滚轮**循环切；标签本身也写着当前账户名，瞟一眼就知道现在看的是谁
+- **平铺**：每个账户各占一格，格顶写着账户名，一眼看全（3 个 GLM 账户 ≈ 一次看三条进度）——适合「就想同时盯着几个号」；点账户名把它设为当前账户。名字行是**整条胶囊统一**的：哪怕某家只有一个账户也照样写（左右两列才会等高对齐）；同一家的账户之间是一条内缩的浅线，两家之间是一条更亮的竖线
+
+切换当前账户的方式：面板里点 chips、胶囊上点账户标签/滚轮、平铺模式下点账户名。
+颜色规则：胶囊与面板按**各账户自己的水位**上色（平铺时左边可能青、右边已经红）；托盘图标取全局最差档位，任何一家任何账户凭据失效即变红，不会被其他账户的好状态掩盖。
 
 **保存行为**：开关和下拉**改完立即生效并保存**（右上角会闪一下「✓ 已保存」）；
-只有凭据输入框需要显式点「保存并刷新」——按钮在**设置页右上角**和**页面底部**各有一个，改完凭据不用翻到底。
+账户凭据在「添加/编辑」表单里显式保存——表单按提交校验凭据格式，格式不对的粘贴会被忽略并保留旧值。
 
 **关于「两个刷新频率」**：主频率（默认 10 分钟）伺候 GLM 配额与 DeepSeek 平台账单——这两个接口一个有限流、一个是私有接口，不适合更快；
 DeepSeek **余额**是官方公开接口，可以单独高频采（默认 2 分钟），界面上的「最近 5 分钟」「1 小时柱图」靠它。
@@ -129,29 +143,43 @@ npm install          # 已配置 npmmirror 镜像
 npm start            # 本地运行（F12 开 DevTools）
 npm run test:usage   # GLM 数据层（需 /tmp/glm_token 或 GLM_TOKEN 放真实 token；有 ANTHROPIC_AUTH_TOKEN 时附带 API Key 鉴权联测）
 npm run test:deepseek# DeepSeek 数据层：凭据提取/余额解析/账单信封/差值聚合 + 真实余额联测（DS_API_KEY）
-npm run test:main    # 主进程集成测试：桩掉 electron 真实加载 main.js，验状态结构、双 provider 并行、配置钳制
+npm run test:providers # provider 注册表：元数据完整性、glm/deepseek 实现的 fetch/提醒策略/高频轮询（全 mock，不连网）
+npm run test:main    # 主进程集成测试：桩掉 electron 真实加载 main.js，验旧配置迁移、accounts 状态结构、账户 CRUD、窗口尺寸联动
 npm run test:renderer# 渲染层交互测试（需 python3 + playwright）
 npm run test:drag    # 拖拽引擎测试（模拟缩放屏下的光标跟随与窗口尺寸漂移）
 npm run icon         # 重新生成图标
 python3 tools/shots.py  # 重新生成 README 截图（假数据，需 playwright）
-npm run dist:win     # 打包 Windows 安装版 + 便携版
+npm run dist:win     # 打包 Windows 安装版 + 便携版（本地 Linux 出安装版需要 wine）
 ```
+
+打包有两个收尾钩子（`build/`）：`afterPack.js` 裁掉用不到的运行时组件（dxcompiler/dxil/elevate），
+`afterArtifacts.js` 把 Windows 的 zip 重打成「解压出来一层 `GLM-Usage-Widget/` 文件夹」并改名 `-win64.zip`
+—— electron-builder 26 的 zip 目标在 Windows 上写死了不套目录（`ArchiveTarget.js` 里 `withoutDir = !isMac`），
+配置里没开关，只能在产物出来后用自带的 7za 按同一套压缩参数重打一遍。
 
 真实凭据一律走环境变量注入（`GLM_TOKEN` / `DS_API_KEY` / `/tmp/glm_token`），代码与测试里不出现明文。
 
 ### 目录
 
 ```
-main.js             主进程：窗口/托盘/定时刷新/通知/配置/多 provider 编排
-preload.js          contextBridge 桥
-lib/usage.js        GLM 配额请求与解析（纯 Node 可独立测试）
-lib/deepseek.js     DeepSeek 余额 + 平台账单两条链路（同上）
-lib/ds-history.js   余额差值历史：样本抽稀、逐日/逐小时聚合、实时读数（纯函数）
-lib/format.js       万/千分位/倒计时/金额/token 格式化（主进程与渲染层共用）
-lib/drag.js         拖拽几何（主进程独占光标坐标系）
-renderer/           胶囊（双列）+ 面板（GLM/DeepSeek 两页签）+ 设置
-tools/              图标生成
+main.js               主进程：窗口/托盘/定时刷新/通知/配置 + 按账户遍历的刷新与轮询编排
+preload.js            contextBridge 桥（含账户 CRUD）
+lib/providers/        ★ provider 注册表：meta.js 元数据（凭据声明/强调色/列宽，双端加载）+ glm.js/deepseek.js 实现 + index.js
+lib/usage.js          GLM 配额请求与解析（纯 Node 可独立测试）
+lib/deepseek.js       DeepSeek 余额 + 平台账单两条链路（同上）
+lib/tokens.js         三种凭据的提取规则（UMD，主进程与渲染层共用）
+lib/ds-history.js     余额差值历史：样本抽稀、逐日/逐小时聚合、实时读数（纯函数，按账户分桶）
+lib/format.js         万/千分位/倒计时/金额/token 格式化（主进程与渲染层共用）
+lib/drag.js           拖拽几何（主进程独占光标坐标系）
+renderer/             骨架（app.js 编排）+ panes.js（各 provider 的胶囊列/面板视图）+ settings.js（meta 驱动的账户管理）
+tools/                图标生成 / 截图脚本
 ```
+
+**扩展一家新 provider（如火山云）的清单**：`lib/providers/<id>.js` 写 fetch 实现 →
+`meta.js` 加一条元数据（名称/凭据字段/强调色/胶囊列宽兜底值）→ `index.js` 注册一行 →
+需要专属面板视图时在 `renderer/panes.js` 加一个工厂（复用 `capsuleGroup()` 即得「切换/平铺」两种布局）。
+设置页分段、账户管理、面板页签、胶囊列、阈值提醒、凭据剪贴板识别全部自动出现，main.js 无需改动。
+胶囊的最终宽高由渲染层实测后经 `capsule:size` 回传，`meta.capsuleW` 只用于首帧兜底。
 
 ### 已知边界
 
@@ -161,7 +189,9 @@ tools/              图标生成
   且按 UTC 日界切天（与官网一致），「今日」在北京时间 08:00 前后会有一次跳变
 - 未配平台令牌时消费靠余额差值推算，**挂件没运行的时段补不回来**（并入下一次采样那天）；
   历史样本保留 90 天，存在 `%APPDATA%\GLM 用量挂件\ds-history.json`
-- 多显示器场景以主显示器工作区为定位基准；面板两个页签同高（326×270），切换不动窗口
+- 多显示器场景以主显示器工作区为定位基准；面板宽度固定 326，**高度由渲染层实测内容后上报**
+  （两个页签取高者，所以切页签窗口一个像素都不动）—— 写死高度在换字体/换系统时会差几像素，
+  不是把账户 chips 行裁掉、就是在底部多出一截空白
 - 「近 1 小时」「5 分钟柱」的分辨率 = 余额刷新频率（默认 2 分钟）；调到「关闭」或「跟主刷新（10 分钟）」时最细那档基本画不出东西
 
 ### 排查日志
