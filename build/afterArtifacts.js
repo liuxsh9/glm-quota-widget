@@ -47,9 +47,13 @@ async function repack(appDir, productName, outFile, compression) {
   } finally {
     fs.rmSync(stage, { recursive: true, force: true });   // 只是硬链，删掉不动 win-unpacked
   }
-  // 验收：新 zip 里每一条都得在 <productName>/ 底下，否则当成失败（保留原平铺 zip）
+  // 验收：新 zip 里每一条都得在 <productName>/ 底下，否则当成失败（保留原平铺 zip）。
+  // 注意：Windows 上 7-Zip 列出的 Path 用反斜杠、行尾还是 CRLF —— 两个都得归一化再比，
+  // 否则本地（Linux）通过、CI（Windows）判不合格，钩子静默回退成平铺 zip。
   const list = execFileSync(sevenZip, ['l', '-ba', '-slt', outFile], { encoding: 'utf8' });
-  const paths = list.split('\n').filter((l) => l.startsWith('Path = ')).map((l) => l.slice(7).trim());
+  const paths = list.split(/\r?\n/)
+    .filter((l) => l.startsWith('Path = '))
+    .map((l) => l.slice(7).trim().replace(/\\/g, '/').replace(/\/+$/, ''));
   const bad = paths.filter((p) => p !== productName && !p.startsWith(productName + '/'));
   if (!paths.length || bad.length) throw new Error(`归档里出现不在 ${productName}/ 下的条目：${bad.slice(0, 3).join(', ')}`);
   return paths.length;

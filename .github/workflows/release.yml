@@ -48,6 +48,14 @@ jobs:
         env:
           ELECTRON_MIRROR: https://github.com/electron/electron/releases/download/
 
+      - name: Verify artifacts
+        shell: pwsh
+        run: |
+          Get-ChildItem dist/*.exe, dist/*.zip | Select-Object Name, Length
+          if (-not (Test-Path "dist/*-win64.zip")) {
+            throw "缺少 -win64.zip：打包钩子 build/afterArtifacts.js 没生效（它失败时会静默保留平铺 zip）"
+          }
+
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
