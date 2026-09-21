@@ -456,6 +456,7 @@ with sync_playwright() as p:
     foot_bottom = pg.evaluate("document.querySelector('#panel .pane-ds .ds-left').getBoundingClientRect().bottom")
     card_bottom = pg.evaluate("document.querySelector('#panel').getBoundingClientRect().bottom")
     t("DS 视图底部完整落在卡片内", foot_bottom <= card_bottom - 8, f"foot={foot_bottom:.0f} card={card_bottom:.0f}")
+    # 面板高度跟着当前页签走：DS 报自己那条（不再被别家页签顶高）
     t("DS 与 GLM 上报同一个高度（切换不跳）", pg.evaluate("window.__glmPanelH") == pg.evaluate("window.__panelSize.h"),
       f"{pg.evaluate('window.__glmPanelH')} vs {pg.evaluate('window.__panelSize.h') if pg.evaluate('window.__panelSize') else None}")
     pg.locator("#panel").screenshot(path="/tmp/r_panel_ds.png")
@@ -486,7 +487,7 @@ with sync_playwright() as p:
       pg.evaluate("[...document.querySelectorAll('#panel .pane')].map(p => p.getAttribute('style'))") == styles_before)
     t("页签既没被脱流（position 仍是 static，永远留在布局里）",
       pg.evaluate("""() => [...document.querySelectorAll('#panel .pane')].every(p => getComputedStyle(p).position === 'static')"""))
-    t("非当前页签靠 visibility 藏（高度照样参与，所以容器自动取最大）",
+    t("非当前页签靠 visibility 藏（高度照样参与，GLM / DeepSeek 取最高对齐）",
       pg.evaluate("""() => { const off = document.querySelector('#panel .pane:not(.on)');
           return off ? getComputedStyle(off).visibility === 'hidden' : true; }"""))
     t("当前页签内容完整可见（高度不是 0）",
@@ -551,10 +552,16 @@ with sync_playwright() as p:
           paneH: +pane.getBoundingClientRect().height.toFixed(2),
         };
       }"""
+    # 切页签后要 fit 一次：面板高度跟着页签走，主进程也是收到新高度才改窗口的，
+    # 不 fit 就是在「窗口还是上一个页签的高度」下量，末行距卡片底必然偏
     pg.evaluate("() => { window.__state.config.panelTab = 'glm'; window.__cb(window.__state); }")
+    pg.wait_for_timeout(150)
+    fit_panel(pg)
     pg.wait_for_timeout(150)
     g = pg.evaluate(METRICS, "#panel .pane-glm .pct")
     pg.evaluate("() => { window.__state.config.panelTab = 'deepseek'; window.__cb(window.__state); }")
+    pg.wait_for_timeout(150)
+    fit_panel(pg)
     pg.wait_for_timeout(150)
     d = pg.evaluate(METRICS, "#panel .pane-ds .ds-bal")
     t("首行距页头一致（GLM 大数字 / DS 总余额）", abs(g["firstTop"] - d["firstTop"]) < 0.6, f'{g["firstTop"]} vs {d["firstTop"]}')
@@ -1059,21 +1066,45 @@ with sync_playwright() as p:
     pg.wait_for_timeout(200)
     t("三家 provider 时胶囊出三列", pg.locator("#capsule .cap-grp").count() == 3)
     t("胶囊分隔线两条", pg.locator("#capsule .cap-sep").count() == 2)
-    t("火山格子三行窗口都画出来了", pg.locator("#capsule .cap-volc .grp").count() == 3)
-    t("三行百分比分别是 62/38/21",
-      [pg.text_content("#capsule .cap-volc .pct-%s" % k) for k in ("five", "week", "month")] == ["62", "38", "21"])
-    t("月窗口的条宽真的接上了 CSS 变量（不是退回满格）",
-      pg.evaluate("getComputedStyle(document.querySelector('#capsule .cap-volc .fm')).width") not in ("", "0px"))
-    t("三个窗口的幽灵段/亮线变量都在",
+    t("火山格子只占两行：5h / 周（月不排第三行）", pg.locator("#capsule .cap-volc .grp").count() == 2)
+    t("两个条形仍是 62 / 38，月的数字 21 也在",
+      [pg.text_content("#capsule .cap-volc .pct-%s" % k) for k in ("five", "week")] == ["62", "38"]
+      and pg.text_content("#capsule .cap-volc .pct-month") == "21")
+    t("月的数字挂在「周」那一行里（不是另起一行）",
+      pg.evaluate("""() => { const m = document.querySelector('#capsule .cap-volc .mnum');
+        return !!m && !!m.closest('.grp').querySelector('.pct-week'); }"""))
+    t("月不再画条：胶囊里只有 5h / 周 两条 bar",
+      pg.locator("#capsule .cap-volc .bar").count() == 2
+      and pg.locator("#capsule .cap-volc .fm").count() == 0)
+    t("5h / 周的幽灵段变量还在（月让位后没连累别家）",
       pg.evaluate("""() => { const e = document.querySelector('#capsule .cap-volc .cap-acct');
         const g = getComputedStyle(e);
-        return [g.getPropertyValue('--pace5'), g.getPropertyValue('--paceW'), g.getPropertyValue('--paceM')].filter(Boolean).length; }""") == 3)
-    t("胶囊随三行长高（> 40）",
-      pg.evaluate("document.querySelector('#capsule').getBoundingClientRect().height") > 40)
+        return [g.getPropertyValue('--pace5'), g.getPropertyValue('--paceW')].filter(Boolean).length; }""") == 2)
+    t("胶囊高度回到 40（不再被第三行顶高）",
+      pg.evaluate("Math.round(document.querySelector('#capsule').getBoundingClientRect().height)") == 40)
+    # 月没有条可上色，超出预期得标在数字上（否则这条信号在胶囊里就没了）
+    pg.evaluate("() => { window.__state.providers.volc.accounts[0].data.month.percent = 95; window.__cb(window.__state); }")
+    pg.wait_for_timeout(150)
+    t("月超出预期 → 数字标红（.mnum.over）",
+      pg.evaluate("document.querySelector('#capsule .cap-volc .mnum').classList.contains('over')") is True)
+    pg.evaluate("() => { window.__state.providers.volc.accounts[0].data.month.percent = 21; window.__cb(window.__state); }")
+    pg.wait_for_timeout(150)
 
     pg.evaluate("() => { window.__state.config.panelTab = 'volc'; window.__state.view = 'panel'; window.__cb(window.__state); }")
     pg.wait_for_timeout(200)
+    fit_panel(pg)      # 换视图那一帧窗口还是胶囊尺寸，量不准；等窗口跟上再量
+    pg.wait_for_timeout(200)
+    t("跳出取最高的那页（.pane-solo）不占格子，靠 absolute 脱流",
+      pg.evaluate("""() => { const s = document.querySelector('#panel .pane-solo');
+          return !!s && getComputedStyle(s).position === 'absolute'
+            && document.querySelector('#panel #panes').getBoundingClientRect().height
+               < s.getBoundingClientRect().height - 50; }"""),
+      pg.evaluate("document.querySelector('#panel #panes').getBoundingClientRect().height"))
     t("火山面板有三个配额块", pg.locator("#panel .pane-volc .blk-q").count() == 3)
+    # 三块比 GLM 的两块高出一截：这一页要自己高，但**不能把 GLM / DeepSeek 也顶高**
+    t("火山这页自己的高度（比 GLM 高出一块）",
+      pg.evaluate("window.__panelSize.h") > pg.evaluate("window.__glmPanelH") + 50,
+      f"火山 {pg.evaluate('window.__panelSize.h')} vs GLM {pg.evaluate('window.__glmPanelH')}")
     t("月额度块存在（GLM 只有两块）", pg.locator("#panel .pane-volc [data-win='month']").count() == 1)
     t("三块分别标着 5 小时 / 周 / 月",
       [pg.text_content("#panel .pane-volc [data-win='%s'] .wname" % k) for k in ("five", "week", "month")]

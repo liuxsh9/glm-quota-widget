@@ -1,7 +1,7 @@
 {
   "name": "glm-quota-widget",
   "productName": "GLM 用量挂件",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "description": "用量悬浮挂件：多账户监控 GLM Coding Plan 5小时/周配额 + DeepSeek 官方 API 余额/消费，provider 可扩展，托盘常驻",
   "main": "main.js",
   "author": "liuxsh9",

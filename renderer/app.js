@@ -144,7 +144,8 @@ function applyState(s) {
   const warn = { expired: 1, error: 1, ratelimit: 1 };
   upd.classList.toggle('err', !!(tabAcc && warn[tabAcc.status]));
   upd.textContent = tabAcc ? ({
-    ok: tabAcc.lastFetchAt ? hhmm(tabAcc.lastFetchAt) + ' 更新' : '',
+    // 只留时间：右边的 ⟳ 已经说明这是「上次更新」，三家页签挤在 290px 里时这 22px 很值钱
+    ok: tabAcc.lastFetchAt ? hhmm(tabAcc.lastFetchAt) : '',
     loading: '刷新中…',
     expired: '已过期',
     ratelimit: '限流退避中',
@@ -186,7 +187,8 @@ function renderTabs(s) {
     host.innerHTML = ids.map((pid) => {
       const meta = PROV.byId(pid);
       const badge = meta && meta.tabBadge === 'level' ? ' <b class="lvl"></b>' : '';
-      return `<button class="tab" data-pid="${pid}" role="tab">${esc(meta ? meta.tab : pid)}${badge}</button>`;
+      const label = meta ? (meta.tabShort || meta.tab) : pid;   // 页签窄，优先用更短的写法
+      return `<button class="tab" data-pid="${pid}" role="tab">${esc(label)}${badge}</button>`;
     }).join('');
     host.querySelectorAll('.tab').forEach((t) => {
       t.addEventListener('click', (e) => {
@@ -199,12 +201,15 @@ function renderTabs(s) {
   host.querySelectorAll('.tab').forEach((t) => {
     const pid = t.dataset.pid;
     t.classList.toggle('on', pid === s.config.panelTab);
+    const meta = PROV.byId(pid);
     const lvl = t.querySelector('.lvl');
     if (lvl) {
       const acc = activeAccOf(s, pid);
       const d = acc && acc.data;
       lvl.textContent = d && d.level ? F.levelName(d.level) : '';
     }
+    // 套餐徽标只在当前页签显示（见 style.css）：悬停任一页签都能看到「哪家 + 什么套餐」
+    t.title = (meta ? meta.name : pid) + (lvl && lvl.textContent ? ` · ${lvl.textContent}` : '');
   });
 }
 
@@ -312,9 +317,14 @@ function syncCapsuleSize() {
    就是在最下面多出一截空白。两个页签取高者，所以切页签窗口仍然一个像素都不动。 */
 /** 页签区高度 = 两个页签里高的那个（CSS 让它们叠在同一个 grid 格子，容器自动取最大）。
  *  纯读一个容器的尺寸，不碰任何页签的样式。 */
+/** 页签区的高度：格子取最高的那批（GLM / DeepSeek 高度相仿，取齐了切页签才不跳）；
+ *  跳出格子的那一页（.pane-solo，火山多一个「月」块）量不到，当前页签是它时单独算进来 */
 function panesHeight() {
   const el = $('#panes');
-  return el ? el.getBoundingClientRect().height : 0;
+  if (!el) return 0;
+  const h = el.getBoundingClientRect().height;
+  const solo = el.querySelector('.pane-solo.on');
+  return solo ? Math.max(h, solo.getBoundingClientRect().height) : h;
 }
 
 /** 窗口尺寸变化后重新量一遍：切换视图的那一帧窗口还是旧尺寸（面板宽度会决定文字换行），

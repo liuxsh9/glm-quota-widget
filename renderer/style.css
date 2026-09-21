@@ -166,6 +166,12 @@ body.theme-light #capsule.cap-tiled .cap-sep { background: rgba(23, 28, 45, .22)
 #capsule .bar i.fm { width: calc(var(--pm, 0) * 1%); }
 #capsule .rows b { font-size: 12.5px; font-weight: 700; }
 #capsule .rows b::after { content: "%"; font-size: 9.5px; font-weight: 400; color: var(--ink3); }
+/* 火山在胶囊里的「月」：只有数字没有条（三条窗口排三行会压扁行距、顶高整枚胶囊）。
+   数字排在「周」那一行后面，所以左边留一点空隙把它和周的百分比分开 */
+#capsule .mnum { display: inline-flex; align-items: baseline; font-size: 10.5px; color: var(--ink3); margin-left: 3px; }
+#capsule .mnum b { color: var(--ink); }
+#capsule .mnum.over b { color: #fbbf24; }
+body.theme-light #capsule .mnum.over b { color: #b45309; }
 #capsule .glm-warn, #capsule .cap-warn { display: none; color: #fbbf24; font-size: 11px; white-space: nowrap; }
 /* 失效与「未开通套餐」都藏掉数据行、改说一句人话——两种都不是靠数字能看懂的 */
 #capsule .cap-acct.st-expired .rows, #capsule .cap-acct.st-nosub .rows { display: none; }
@@ -215,12 +221,16 @@ body.no-providers #capsule .hint-all { display: flex; }
 /* ============ 面板（B） ============ */
 #panel { flex-direction: column; padding: 16px 18px 16px; border-radius: 16px; position: relative; }
 #panel .phead {
-  display: flex; align-items: center; gap: 8px;
+  display: flex; align-items: center; gap: 6px;   /* 三家页签 + 时间 + 两个按钮正好塞进 288px */
   font-size: 12px; color: var(--ink3);
   padding-bottom: 12px; border-bottom: 1px solid var(--hairline);
 }
 #panel .phead b { color: var(--ink2); font-weight: 600; }
-#panel .upd { margin-left: auto; font-size: 11px; color: var(--ink3); white-space: nowrap; flex: none; }
+/* 位置不够时**先让时间**（可压缩、能省略号），页签和右边的按钮不动 */
+#panel .upd {
+  margin-left: auto; font-size: 11px; color: var(--ink3); white-space: nowrap;
+  flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis;
+}
 #panel .upd.err { color: #fbbf24; }
 #panel .ico { color: var(--ink3); font-size: 14px; line-height: 1; padding: 4px 5px; border-radius: 7px; }
 #panel .ico:hover { color: var(--ink); background: rgba(255, 255, 255, .09); }
@@ -424,24 +434,39 @@ body.theme-light .chip.none { background: rgba(23, 28, 45, .04); }
 #panel .ds-foot .dsright { margin-left: auto; }
 
 /* ============ 面板页签（GLM / DeepSeek） ============ */
+/* 页签组可压缩（min-width:0 + flex-shrink）：加到第三家时它会把「10:28 更新」和两个按钮
+   挤出面板右边缘——现在是挤到自己里头去（放不下就省略号），右边的按钮永远留在框内 */
 #panel .tabs {
   display: flex; gap: 2px; padding: 2px; border-radius: 8px;
   background: rgba(255, 255, 255, .07);
+  flex: 0 1 auto; min-width: 0; overflow: hidden;
 }
-#panel .tab { font-size: 11.5px; line-height: 1.4; padding: 2px 9px; border-radius: 6px; color: var(--ink3); white-space: nowrap; flex: none; }
+#panel .tab {
+  font-size: 11px; line-height: 1.4; padding: 2px 7px; border-radius: 6px; color: var(--ink3);
+  white-space: nowrap; flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis;
+}
 #panel .tab:hover { color: var(--ink2); }
 #panel .tab.on { color: var(--ink); font-weight: 600; background: rgba(255, 255, 255, .11); }
 #panel .tab b { font-size: 10.5px; font-weight: 500; }
 #panel .tab.on b { color: var(--ink2); }
+/* 套餐徽标只在当前页签上显示：三家时头上要塞「页签组 + 时间 + 两个按钮」，徽标占了 40px，
+   全带上就把 ⚙ 挤出面板（悬停页签有 title 兜底，详情看那一页的脚注） */
+#panel .tab b.lvl { display: none; }
+#panel .tab.on b.lvl { display: inline; }
 body.theme-light #panel .tabs { background: rgba(23, 28, 45, .07); }
 body.theme-light #panel .tab.on { background: rgba(255, 255, 255, .9); color: #262b38; }
 
-/* 两个页签叠在同一个 grid 格子里：容器高度**自动**等于两者里高的那个（切页签零位移是结构保证，
-   不靠量），非当前的用 visibility 藏（仍在布局里，所以它的高度照样参与）。早先"临时把页签挪到
-   屏幕外量高度"的做法改过 DOM，会把页签永久留在脱流隐藏状态 —— 只剩页头按钮、下面一片空白。 */
-#panel #panes { flex: none; display: grid; grid-template-columns: 1fr; grid-auto-rows: auto; min-height: 0; }
+/* 页签叠在同一个 grid 格子里：容器高度**自动**等于它们里最高的那个。GLM 与 DeepSeek 高度相仿
+   （内容都占满），取最高能让「切页签零位移」，非当前的用 visibility 藏（仍在布局里，所以高度
+   照样参与）。早先"临时把页签挪到屏幕外量高度"的做法改过 DOM，会把页签永久留在脱流隐藏状态 ——
+   只剩页头按钮、下面一片空白。 */
+#panel #panes { flex: none; display: grid; grid-template-columns: 1fr; grid-auto-rows: auto; min-height: 0; position: relative; }
 #panel .pane { grid-area: 1 / 1; display: flex; flex-direction: column; visibility: hidden; }
 #panel .pane.on { visibility: visible; }
+/* 火山那页比 GLM / DeepSeek 高一截（多一个「月」块）：绝对定位让它**跳出**上面那套「取最高」，
+   否则另外两家会被顶高 82px（内容只占一半、下面全是空白）。它自己多高就多高 —— 格子量不到它，
+   所以当前页签是它时，app.js 的 panesHeight() 会把它单独算进来。 */
+#panel .pane-solo { position: absolute; left: 0; right: 0; top: 0; }
 #panel .pane-glm .blk-note { margin-top: auto; }
 
 /* ============ 账户 chips 行 ============

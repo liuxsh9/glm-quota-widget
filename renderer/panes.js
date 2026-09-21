@@ -540,6 +540,9 @@
   ];
 
   function makeVolcPane() {
+    // 火山这页比 GLM / DeepSeek 高一截（多一个「月」块）。pane-solo = 跳出面板的「页签取最高」：
+    // 否则另外两家会被它顶高 82px（内容只占一半、下面全是空白）。它自己多高就多高 ——
+    // 当前页签是它时，高度由 app.js 的 panesHeight() 单独算进来
     const root = build(`
       <div class="pane pane-volc">
         ${VOLC_WINS.map((w) => `
@@ -555,6 +558,7 @@
         </div>`).join('')}
         <div class="blk blk-note"><span class="notetxt"></span><span class="chip prov-chip"><i class="pdot"></i><span class="ctxt">—</span></span></div>
       </div>`);
+    root.classList.add('pane-solo');
     const $ = (s) => root.querySelector(s);
     const blkOf = (slot) => root.querySelector(`[data-win="${slot}"]`);
 
@@ -652,15 +656,20 @@
     return { el: root, update, tick };
   }
 
+  /* 胶囊那格只有 40px 高（和 GLM / DeepSeek 齐平）：三条窗口排三行会把行距压扁，还会把整枚
+     胶囊顶高 6px。所以「月」在胶囊里退化成数字、跟在「周」那一行后面 —— 月额度涨得慢，条给不
+     出更多信息，数还是要看得见。面板里三个大块照旧（那里横竖都有地方）。 */
+  const VOLC_BARS = VOLC_WINS.filter((w) => w.slot !== 'month');   // 胶囊里保留条形的那两条
+
   const VOLC_CELL = `
     <span class="dot"></span>
     <div class="rows">
-      ${VOLC_WINS.map((w) => `
-      <div class="grp"><span class="lab">${w.short}</span><div class="bar"><span class="ghost ${w.ghost}"></span><i class="${w.fill}"></i><span class="ovr ${w.ovr}"></span><span class="edge ${w.edge}"></span></div><b class="pct-${w.slot}">–</b></div>`).join('')}
+      ${VOLC_BARS.map((w) => `
+      <div class="grp"><span class="lab">${w.short}</span><div class="bar"><span class="ghost ${w.ghost}"></span><i class="${w.fill}"></i><span class="ovr ${w.ovr}"></span><span class="edge ${w.edge}"></span></div><b class="pct-${w.slot}">–</b>${w.slot === 'week' ? '<span class="mnum" title="月额度（面板里有完整一条）">月<b class="pct-month">–</b></span>' : ''}</div>`).join('')}
     </div>
     <span class="cap-warn" hidden></span>`;
 
-  /** 一格火山数据：三行 mini bar（5h / 周 / 月），配速每秒由 app 的秒循环带上 */
+  /** 一格火山数据：两行 mini bar（5h / 周）+ 月数字，配速每秒由 app 的秒循环带上 */
   function fillVolcCell(el, acc, ctx) {
     const d = acc.data;
     const st = acc.status || 'boot';
@@ -669,13 +678,19 @@
     for (const w of VOLC_WINS) {
       const win = alive ? d[w.slot] : null;
       const known = !!(win && win.known);
-      el.style.setProperty('--' + w.css, known ? win.percent : 0);
-      el.querySelector(`.pct-${w.slot}`).textContent = known ? win.percent : '–';
       const pace = pacePercent(win);
       const over = overOf(win, pace, ctx.config);
+      if (over > 0) anyOver = true;
+      // 月没有条可上色，超预期只能标在数字上（胶囊里唯一一处给数字上色的地方）
+      if (w.slot === 'month') {
+        el.querySelector('.pct-month').textContent = known ? win.percent : '–';
+        el.querySelector('.mnum').classList.toggle('over', over > 0);
+        continue;
+      }
+      el.style.setProperty('--' + w.css, known ? win.percent : 0);
+      el.querySelector(`.pct-${w.slot}`).textContent = known ? win.percent : '–';
       el.style.setProperty('--' + w.pace, pace == null ? 0 : pace.toFixed(2));
       el.style.setProperty('--' + w.over, over.toFixed(2));
-      if (over > 0) anyOver = true;
     }
     el.dataset.pace = anyOver ? 'over' : 'ok';
     if (acc.tier) el.dataset.tier = acc.tier;
