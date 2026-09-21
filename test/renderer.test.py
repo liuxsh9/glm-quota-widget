@@ -809,11 +809,11 @@ with sync_playwright() as p:
     push(pg, view="settings")
     pg.wait_for_function("document.body.className.includes('view-settings')")
     pg.set_viewport_size({"width": SETTINGS[0], "height": SETTINGS[1]})
-    t("设置页分三段（两家 provider + 通用）", pg.locator("#settings .sech").count() == 3)
+    t("设置页分四段（三家 provider + 通用）", pg.locator("#settings .sech").count() == 4)
     t("三行账户（主号/备用号/DeepSeek）", pg.locator("#settings .acc-row").count() == 3)
     t("账户行显示尾号", "0LD_OLD" in pg.text_content("#provSecs"))
     t("账户状态词=已失效", "已失效" in pg.text_content("#provSecs .acc-row[data-id='a1'] .aword"))
-    t("两个添加按钮", pg.locator("#settings .acc-add").count() == 2)
+    t("三个添加按钮", pg.locator("#settings .acc-add").count() == 3)
     t("GLM 专属控件在 GLM 段", pg.evaluate("""() => {
         const glmSec = document.querySelector('#provSecs .acc-wrap[data-pid=\\'glm\\']');
         return !!glmSec && !!glmSec.querySelector('#threshold') && !!glmSec.querySelector('#pacealert');
@@ -1038,9 +1038,107 @@ with sync_playwright() as p:
     t("10/95 周触发→high", pg.evaluate("GLMFMT.tierOfPair(10, 95)") == "high")
     t("95/10 5h触发→high", pg.evaluate("GLMFMT.tierOfPair(95, 10)") == "high")
 
+    # ---- 火山方舟：第三家 provider 的胶囊 / 面板 / 设置 ----
+    print("火山方舟（第三家 provider）:")
+    pg.evaluate("""() => {
+      const s = window.__state, H = 3600e3, D = 86400e3, NOW = Date.now();
+      const win = (percent, resetH, lenMs) => ({ known: true, percent, used: null, total: null, remaining: null,
+        nextResetTime: NOW + resetH * H, windowStart: NOW + resetH * H - lenMs, windowMs: lenMs });
+      s.view = 'capsule';
+      s.providers.volc = { name: '火山方舟 Coding / Agent Plan', tab: '火山', tier: 'low',
+        accounts: [{ id: 'v1', name: '火山', enabled: true, status: 'ok', msg: '', lastFetchAt: NOW, tier: 'low',
+          data: { plan: 'coding', level: null, bothSubscribed: false, warn: '', fetchedAt: NOW,
+                  five: win(62, 3, 5*H), week: win(38, 99, 7*D), month: win(21, 480, 30*D) } }],
+        activeId: 'v1' };
+      s.config.accounts.push({ id: 'v1', provider: 'volc', name: '火山', enabled: true,
+        creds: { accessKeyId: { set: true, tail: 'xxxxxx' }, accessKeySecret: { set: true, tail: 'yyyyyy' },
+                 plan: { set: true, tail: 'auto', value: 'coding' } } });
+      s.config.active.volc = 'v1';
+      window.__cb(s);
+    }""")
+    pg.wait_for_timeout(200)
+    t("三家 provider 时胶囊出三列", pg.locator("#capsule .cap-grp").count() == 3)
+    t("胶囊分隔线两条", pg.locator("#capsule .cap-sep").count() == 2)
+    t("火山格子三行窗口都画出来了", pg.locator("#capsule .cap-volc .grp").count() == 3)
+    t("三行百分比分别是 62/38/21",
+      [pg.text_content("#capsule .cap-volc .pct-%s" % k) for k in ("five", "week", "month")] == ["62", "38", "21"])
+    t("月窗口的条宽真的接上了 CSS 变量（不是退回满格）",
+      pg.evaluate("getComputedStyle(document.querySelector('#capsule .cap-volc .fm')).width") not in ("", "0px"))
+    t("三个窗口的幽灵段/亮线变量都在",
+      pg.evaluate("""() => { const e = document.querySelector('#capsule .cap-volc .cap-acct');
+        const g = getComputedStyle(e);
+        return [g.getPropertyValue('--pace5'), g.getPropertyValue('--paceW'), g.getPropertyValue('--paceM')].filter(Boolean).length; }""") == 3)
+    t("胶囊随三行长高（> 40）",
+      pg.evaluate("document.querySelector('#capsule').getBoundingClientRect().height") > 40)
+
+    pg.evaluate("() => { window.__state.config.panelTab = 'volc'; window.__state.view = 'panel'; window.__cb(window.__state); }")
+    pg.wait_for_timeout(200)
+    t("火山面板有三个配额块", pg.locator("#panel .pane-volc .blk-q").count() == 3)
+    t("月额度块存在（GLM 只有两块）", pg.locator("#panel .pane-volc [data-win='month']").count() == 1)
+    t("三块分别标着 5 小时 / 周 / 月",
+      [pg.text_content("#panel .pane-volc [data-win='%s'] .wname" % k) for k in ("five", "week", "month")]
+      == ["5小时额度", "周额度", "月额度"])
+    t("Coding Plan 没有绝对值时不写「次」（不假装有）",
+      pg.evaluate("document.querySelector(\"#panel .pane-volc [data-win='five'] .abs\").textContent.trim()") == "")
+    t("脚注标出当前是哪一种套餐", "Coding Plan" in pg.text_content("#panel .pane-volc .notetxt"))
+
+    pg.evaluate("""() => {
+      const a = window.__state.providers.volc.accounts[0];
+      a.data.plan = 'agent';
+      a.data.five = Object.assign({}, a.data.five, { used: 250, total: 1000 });
+      window.__cb(window.__state);
+    }""")
+    pg.wait_for_timeout(150)
+    t("Agent Plan 有绝对值时显示 已用/总量",
+      "250" in pg.text_content("#panel .pane-volc [data-win='five'] .abs")
+      and "1,000" in pg.text_content("#panel .pane-volc [data-win='five'] .abs"))
+
+    pg.evaluate("() => { window.__state.providers.volc.accounts[0].data.bothSubscribed = true; window.__cb(window.__state); }")
+    pg.wait_for_timeout(150)
+    t("两种套餐都订了 → 脚注给出提示", "两种套餐都订了" in pg.text_content("#panel .pane-volc .notetxt"))
+
+    pg.evaluate("() => { const a = window.__state.providers.volc.accounts[0]; a.status = 'nosub'; a.data = null; window.__cb(window.__state); }")
+    pg.wait_for_timeout(150)
+    t("未开通套餐：面板显示「–」而不是 0（0 会被读成「用光了」）",
+      pg.text_content("#panel .pane-volc [data-win='five'] .pv") == "–")
+
+    pg.evaluate("() => { window.__state.view = 'capsule'; window.__cb(window.__state); }")
+    pg.wait_for_timeout(150)
+    t("未开通套餐：胶囊改说人话（藏掉数据行）", "未开通套餐" in pg.text_content("#capsule .cap-volc .cap-warn")
+      and pg.locator("#capsule .cap-volc .rows").is_hidden())
+    pg.evaluate("() => { const a = window.__state.providers.volc.accounts[0]; a.status = 'expired'; window.__cb(window.__state); }")
+    pg.wait_for_timeout(150)
+    t("凭据失效：胶囊也改说人话（这条曾经因为 CSS 只匹配 GLM 的类名而漏掉）",
+      "凭据失效" in pg.text_content("#capsule .cap-volc .cap-warn")
+      and pg.locator("#capsule .cap-volc .rows").is_hidden())
+
+    # 设置页：套餐下拉（渲染 + 回显当前值 + 原值提交）
+    pg.evaluate("() => { window.__state.providers.volc.accounts[0].status = 'ok'; window.__state.view = 'settings'; window.__cb(window.__state); }")
+    pg.set_viewport_size({"width": SETTINGS[0], "height": SETTINGS[1]})
+    pg.wait_for_timeout(200)
+    # 火山段在列表最底下，直接点会被吸顶的标题栏截住——先滚到可视区中间
+    pg.evaluate("document.querySelector(\"#provSecs .acc-row[data-id='v1']\").scrollIntoView({ block: 'center' })")
+    pg.wait_for_timeout(150)
+    pg.locator("#provSecs .acc-row[data-id='v1'] [data-act='edit']").click()
+    pg.wait_for_timeout(200)
+    t("编辑表单里「套餐」是下拉而不是文本框",
+      pg.locator("form.acc-form select[data-cred='plan']").count() == 1
+      and pg.locator("form.acc-form textarea[data-cred='plan']").count() == 0)
+    t("下拉回显当前套餐（coding）",
+      pg.eval_on_selector("form.acc-form select[data-cred='plan']", "e => e.value") == "coding")
+    t("下拉有三个选项", pg.locator("form.acc-form select[data-cred='plan'] option").count() == 3)
+    t("枚举字段没有「清除」按钮（枚举没有空值语义）",
+      pg.locator("form.acc-form [data-clr='plan']").count() == 0)
+    t("枚举字段不进账户行尾号（不然会冒出「…auto」）",
+      "auto" not in pg.text_content("#provSecs .acc-row[data-id='v1'] .atail"))
+    t("AK/SK 尾号仍然显示", "xxxxxx" in pg.text_content("#provSecs .acc-row[data-id='v1'] .atail"))
+    pg.locator("form.acc-form .fcancel").click()
+    pg.wait_for_timeout(150)
+
     print("provider 元数据（GLMPROV）:")
-    t("两家注册且 id 正确", pg.evaluate("GLMPROV.list.map(p => p.id).join()") == "glm,deepseek")
+    t("三家注册且 id 正确", pg.evaluate("GLMPROV.list.map(p => p.id).join()") == "glm,deepseek,volc")
     t("凭据声明驱动设置页", pg.evaluate("GLMPROV.byId('deepseek').credentials.length") == 2)
+    t("火山的套餐是下拉字段（带选项）", pg.evaluate("(() => { const c = GLMPROV.byId('volc').credentials.find(c => c.key === 'plan'); return c && c.kind === 'select' && c.options.length; })()") == 3)
     t("胶囊列宽已声明", pg.evaluate("GLMPROV.byId('glm').capsuleW") > 0)
 
     b.close()

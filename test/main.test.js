@@ -20,7 +20,18 @@ const CWD = path.join(__dirname, '..');
 const USERDATA = fs.mkdtempSync(path.join(os.tmpdir(), 'glm-main-test-'));
 const posted = [];        // 主进程推给渲染层的状态
 const handlers = {};      // 注册过的 IPC
+const screenHandlers = {}; // 注册过的 screen 事件
+const powerHandlers = {};  // 注册过的 powerMonitor 事件（唤醒/解锁后的自检）
+let winOpts = {};          // BrowserWindow 构造参数（验初建位置夹取）
+let trayMenu = null;       // 最近一次托盘菜单（Tray.setContextMenu 收到的那份）
 let trayTip = '';
+// 主屏工作区：测试可临时改小，模拟「扩展屏被拔掉、只剩一块小屏」（拔屏瞬间的列表就是这副样子）
+let primaryWA = { x: 0, y: 0, width: 1920, height: 1040 };
+const disp = () => ({
+  id: 1, scaleFactor: 1,
+  bounds: { x: primaryWA.x, y: primaryWA.y, width: primaryWA.width, height: primaryWA.height + 40 },
+  workArea: primaryWA,
+});
 let windowBounds = { x: 100, y: 100, width: 212, height: 64 };
 let lastMenu = null;              // 最近一次 buildFromTemplate 的菜单模板
 let lastMenuClose = () => { };    // 关闭最近一次 popup（触发它的 callback）
@@ -33,7 +44,6 @@ function t(name, cond, extra) {
 
 /* ---------------- electron 桩 ---------------- */
 const noop = () => { };
-const ev = { on: noop, once: noop, removeAllListeners: noop };
 
 const mkWindow = () => ({
   webContents: { on: noop, send: (_c, s) => posted.push(s), setZoomFactor: noop, toggleDevTools: noop },
@@ -55,11 +65,18 @@ const electronStub = {
     setLoginItemSettings: noop,
     quit: noop,
   },
-  BrowserWindow: function () { return mkWindow(); },
-  Tray: function () { return { setContextMenu: noop, setToolTip: (v) => { trayTip = v; }, setImage: noop, on: noop }; },
-  // 菜单：记下模板，popup 只登记「关闭回调」——测试自己决定何时关（真实原生菜单是异步的）
+  // 真窗口是认构造参数里的 x/y/width/height 的：桩也得认，否则「预置越界 pos」的用例里
+  // 窗口会停在桩的初始坐标上，后面锚左边/锚右边的判断全跟着错
+  BrowserWindow: function (o) {
+    Object.assign(winOpts, o);
+    windowBounds = { x: o.x, y: o.y, width: o.width, height: o.height };
+    return mkWindow();
+  },
+  Tray: function () { return { setContextMenu: (m) => { trayMenu = m; }, setToolTip: (v) => { trayTip = v; }, setImage: noop, on: noop }; },
+  // 菜单：记下模板（template），popup 只登记「关闭回调」——测试自己决定何时关（真实原生菜单是异步的）
   Menu: {
     buildFromTemplate: (tpl) => ({
+      template: tpl,
       popup: (o) => { lastMenu = tpl; lastMenuClose = () => { if (o && typeof o.callback === 'function') o.callback(); }; },
     }),
   },
@@ -71,13 +88,13 @@ const electronStub = {
   Notification: Object.assign(function () { return { on: noop, show: noop }; }, { isSupported: () => true }),
   shell: { openPath: noop, openExternal: noop },
   screen: {
-    getPrimaryDisplay: () => ({ workArea: { x: 0, y: 0, width: 1920, height: 1040 } }),
-    getDisplayMatching: () => ({ id: 1, bounds: { x: 0, y: 0, width: 1920, height: 1080 }, workArea: { x: 0, y: 0, width: 1920, height: 1040 } }),
-    getAllDisplays: () => [{ workArea: { x: 0, y: 0, width: 1920, height: 1040 } }],
+    getPrimaryDisplay: disp,
+    getDisplayMatching: disp,
+    getAllDisplays: () => [disp()],
     getDisplayNearestPoint: () => ({ scaleFactor: 1 }),
-    on: noop,
+    on: (e, fn) => { (screenHandlers[e] = screenHandlers[e] || []).push(fn); },
   },
-  powerMonitor: ev,
+  powerMonitor: { on: (e, fn) => { (powerHandlers[e] = powerHandlers[e] || []).push(fn); } },
   desktopCapturer: { getSources: async () => [] },
   clipboard: { readText: () => '' },
   // 只放行两家官方域名：测试里出现别的域名说明代码写错了
@@ -122,6 +139,8 @@ fs.writeFileSync(path.join(USERDATA, 'config.json'), JSON.stringify({
   // 旧版平铺格式 + notifyThreshold 时代的键（迁移链路全覆盖）
   token: FAKE_GLM, dsToken: FAKE_DS, dsPlatformToken: '', intervalMin: 10,
   notifyThreshold: 75, paceAlert: true,
+  // pos 故意越界（模拟胶囊留在已拔掉的扩展屏上）：初建位置与显示器事件都应把它收回工作区
+  pos: { x: 4000, y: 1500 },
   lastData: SNAP, lastDs: DS_SNAP,
   lastNotifiedWindowStart: 123456, lastNotifiedWeekStart: 654321,
 }, null, 2));
@@ -132,6 +151,9 @@ require(path.join(CWD, 'main.js'));
 
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 const call = (ch, arg) => handlers[ch]({}, arg);
+// 触发已注册的事件回调；缺了就当作没触发 —— 回归版正是「少挂了这个监听」，
+// 那种情况下该由后面的断言报错，而不是让测试在 undefined[0] 上炸掉
+const fire = (map, name) => { const h = (map[name] || [])[0]; if (h) h(); };
 const state = () => call('state:get');
 
 /** 等到所有账户都不在 loading（无网络时走 error，也放行） */
@@ -153,6 +175,10 @@ async function settle(timeoutMs = 30000) {
   t('renderer:ready / state:get / cfg:save / tab:set / view:set / refresh:now / clipboard:peek / acc:* 均已注册',
     ['renderer:ready', 'state:get', 'cfg:save', 'tab:set', 'view:set', 'refresh:now', 'clipboard:peek',
       'acc:add', 'acc:update', 'acc:remove', 'acc:activate'].every((k) => typeof handlers[k] === 'function'));
+
+  t('初建窗口位置已夹进主屏工作区（含 y：模拟胶囊留在已拔掉的扩展屏上）',
+    winOpts.x >= 0 && winOpts.x + winOpts.width <= 1920 && winOpts.y >= 0 && winOpts.y + winOpts.height <= 1040,
+    JSON.stringify(winOpts));
 
   await call('renderer:ready');
   const st = await settle();
@@ -372,6 +398,54 @@ async function settle(timeoutMs = 30000) {
   t('非法 capsuleLayout 被忽略（保留 all）', (await state()).config.capsuleLayout === 'all');
   await call('cfg:save', { capsuleLayout: 'switch' });
   t('capsuleLayout=switch 生效', (await state()).config.capsuleLayout === 'switch');
+
+  console.log('\n显示器热插拔（胶囊所在的扩展屏被拔掉也要能找回）:');
+  t('metrics-changed / removed / added 三个事件均已监听',
+    ['display-metrics-changed', 'display-removed', 'display-added']
+      .every((k) => (screenHandlers[k] || []).length === 1),
+    JSON.stringify(Object.keys(screenHandlers)));
+
+  const small = { w: windowBounds.width + 40, h: windowBounds.height + 40 };  // 幸存的屏只剩这么点
+  windowBounds = Object.assign({}, windowBounds, { x: 4000, y: 1500 });   // 假装胶囊停在已消失的屏幕上
+  primaryWA = { x: 0, y: 0, width: small.w, height: small.h };
+  fire(screenHandlers, 'display-removed');                                // 拔屏往往只派发这一发
+  fire(screenHandlers, 'display-added');                                  // 同批第二发：该被防抖合并
+  await wait(60);
+  t('防抖窗口内不抢跑（不拿还没稳定的显示器列表算位置）',
+    windowBounds.x === 4000 && windowBounds.y === 1500, JSON.stringify(windowBounds));
+  await wait(400);   // 防抖 300ms + applyView 的 setImmediate
+  const wb = windowBounds;
+  t('display-removed → 窗口收回工作区内',
+    wb.x >= 0 && wb.y >= 0 && wb.x + wb.width <= small.w && wb.y + wb.height <= small.h, JSON.stringify(wb));
+  t('落点 = 保存位置夹进工作区的角落',
+    wb.x === small.w - wb.width && wb.y === small.h - wb.height, JSON.stringify(wb));
+  primaryWA = { x: 0, y: 0, width: 1920, height: 1040 };
+
+  console.log('\n睡眠唤醒 / 解锁后的自检:');
+  windowBounds = Object.assign({}, windowBounds, { x: 4000, y: 1500 });   // 唤醒后窗口落在屏幕外
+  fire(powerHandlers, 'resume');
+  await wait(1700);   // 第一拍自检排在 1500ms
+  const wr = windowBounds;
+  t('resume → 唤醒后自检把窗口收回工作区',
+    wr.x >= 0 && wr.y >= 0 && wr.x + wr.width <= 1920 && wr.y + wr.height <= 1040, JSON.stringify(wr));
+
+  windowBounds = Object.assign({}, windowBounds, { x: 4000, y: 1500 });
+  fire(powerHandlers, 'unlock-screen');
+  await wait(1400);   // 解锁自检排在 1200ms
+  const wu = windowBounds;
+  t('unlock-screen → 解锁后同样自检',
+    wu.x >= 0 && wu.y >= 0 && wu.x + wu.width <= 1920 && wu.y + wu.height <= 1040, JSON.stringify(wu));
+
+  console.log('\n托盘「找回窗口」:');
+  const recall = (trayMenu && trayMenu.template || []).find((i) => i.label === '找回窗口');
+  t('托盘菜单里有「找回窗口」', !!recall);
+  windowBounds = Object.assign({}, windowBounds, { x: 4000, y: 1500 });   // 窗口已经丢在屏幕外
+  if (recall) recall.click();   // 没这一项时后面的断言自己报错，别把测试炸掉
+  await wait(60);
+  t('找回后回到主屏默认位置（右上角，留 20px 边距）',
+    windowBounds.x === 1920 - windowBounds.width - 20 && windowBounds.y === 16, JSON.stringify(windowBounds));
+  t('位置记忆已清空（回到自动贴边，不再拿失效坐标当真相）',
+    JSON.parse(fs.readFileSync(path.join(USERDATA, 'config.json'), 'utf8')).pos === null);
 
   // 凭据只落在本机 userData，测试结束顺手删掉
   try { fs.rmSync(USERDATA, { recursive: true, force: true }); } catch { /* 清理失败不影响结论 */ }

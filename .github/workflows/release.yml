@@ -35,10 +35,20 @@ jobs:
           node --check lib/drag.js
           node --check lib/deepseek.js
           node --check lib/ds-history.js
+          node --check lib/volc.js
           node --check lib/providers/meta.js
           node --check lib/providers/glm.js
           node --check lib/providers/deepseek.js
+          node --check lib/providers/volc.js
+          node --check lib/providers/quota-alerts.js
           node --check lib/providers/index.js
+
+      # 纯 Node、不联网、秒级完成：先跑一遍再去打那 10 分钟的包，
+      # 免得「provider 注册表/签名算法写坏了」要等到发版后才发现
+      - name: Unit tests
+        run: |
+          npm run test:volc
+          npm run test:providers
 
       # 钩子失败时会静默保留平铺 zip（发版不能挂），加上真要打 10 分钟包，
       # 所以先在 Windows 上把它的验收逻辑跑一遍 —— 免得又出现「本地过、CI 回退」

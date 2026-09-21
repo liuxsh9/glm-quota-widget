@@ -526,8 +526,175 @@
     return g;
   }
 
+  /* ================= 火山方舟 =================
+     三个配额窗口（5h / 周 / 月），比 GLM 多一个月。
+     条形的宽度、幽灵段、亮线、超支段全部复用 GLM 那套 CSS：规则是按**元素类 + CSS 变量**写的
+     （`i.f5` 取 `--p5`、`.ghost.g5` 取 `--pace5`……），所以只要在面板/格子根上摆好变量，
+     5h 与周两个窗口零新增样式；只有「月」要补几条同样形状的规则。
+
+     窗口描述表：一处写清三行各自的类名与变量名，免得把同一段逻辑抄三遍抄漏一处。 */
+  const VOLC_WINS = [
+    { slot: 'five', short: '5h', name: '5小时额度', fill: 'f5', ghost: 'g5', ovr: 'o5', edge: 'e5', css: 'p5', pace: 'pace5', over: 'over5' },
+    { slot: 'week', short: '周', name: '周额度', fill: 'fw', ghost: 'gW', ovr: 'oW', edge: 'eW', css: 'pw', pace: 'paceW', over: 'overW' },
+    { slot: 'month', short: '月', name: '月额度', fill: 'fm', ghost: 'gM', ovr: 'oM', edge: 'eM', css: 'pm', pace: 'paceM', over: 'overM' },
+  ];
+
+  function makeVolcPane() {
+    const root = build(`
+      <div class="pane pane-volc">
+        ${VOLC_WINS.map((w) => `
+        <div class="blk blk-q" data-win="${w.slot}">
+          <div class="row">
+            <div>
+              <div class="pct"><b class="pv">–</b><i>%</i><span class="overchip">▲ 超预期</span></div>
+              <div class="sub"><span class="wname">${w.name}</span> · <span class="cd">–</span>后重置</div>
+            </div>
+            <div class="pts"><span class="abs"></span><span class="rt">–</span></div>
+          </div>
+          <div class="pbar"><span class="ghost ${w.ghost}"></span><i class="${w.fill}"></i><span class="ovr ${w.ovr}"></span><span class="edge ${w.edge}"></span><div class="ptip"></div></div>
+        </div>`).join('')}
+        <div class="blk blk-note"><span class="notetxt"></span><span class="chip prov-chip"><i class="pdot"></i><span class="ctxt">—</span></span></div>
+      </div>`);
+    const $ = (s) => root.querySelector(s);
+    const blkOf = (slot) => root.querySelector(`[data-win="${slot}"]`);
+
+    function update(ctx) {
+      const d = ctx.acc && ctx.acc.data;
+      const alive = !!(d && ctx.acc.status === 'ok');
+      for (const w of VOLC_WINS) {
+        const win = alive ? d[w.slot] : null;
+        // 窗口缺数据（该套餐没返回这一档）时**必须写 0 而不是 null**：CSS 变量拿到 null 会变成
+        // 字符串 "null"，calc("null" * 1%) 失效后宽度退回 auto，直接画成满格。
+        const known = !!(win && win.known);
+        root.style.setProperty('--' + w.css, known ? win.percent : 0);
+        const blk = blkOf(w.slot);
+        blk.querySelector('.pv').textContent = known ? win.percent : '–';
+        blk.querySelector('.rt').textContent = win && win.nextResetTime ? F.fmtResetTime(win.nextResetTime) : '--';
+        // 只有 Agent Plan 给绝对值。Coding Plan 只返回百分比，这一行就留空——不假装有。
+        const abs = blk.querySelector('.abs');
+        abs.innerHTML = (win && win.used != null && win.total != null)
+          ? `次<br><b>${F.fmtPoints(win.used)}</b> / ${F.fmtPoints(win.total)}<br>` : '';
+      }
+      if (ctx.acc && ctx.acc.tier) root.dataset.tier = ctx.acc.tier;
+
+      const parts = [];
+      if (d && d.plan) parts.push(d.plan === 'agent' ? 'Agent Plan' : 'Coding Plan');
+      if (d && d.bothSubscribed) {
+        parts.push('<span class="hint" title="这个账号两种套餐都订阅了。自动模式只显示先查到的那一种；'
+          + '要同时盯着另一个，去设置里再加一个账户、填同一对 AK/SK，把「套餐」固定成 Agent Plan">⚠ 两种套餐都订了</span>');
+      }
+      if (d && d.warn) {
+        parts.push(`<span class="hint" title="${esc(d.warn)}">⚠ 另一种套餐查询失败</span>`);
+      }
+      $('.notetxt').innerHTML = '<span class="overtxt">▲ = 实际已超出预期</span>' + parts.join('');
+      tick(ctx);
+    }
+
+    function tick(ctx) {
+      const d = ctx.acc && ctx.acc.data;
+      const alive = !!(d && ctx.acc.status === 'ok');
+      let anyOver = false;
+      for (const w of VOLC_WINS) {
+        const win = alive ? d[w.slot] : null;
+        const pace = pacePercent(win);
+        const over = overOf(win, pace, ctx.config);
+        root.style.setProperty('--' + w.pace, pace == null ? 0 : pace.toFixed(2));
+        root.style.setProperty('--' + w.over, over.toFixed(2));
+        if (over > 0) anyOver = true;
+        const blk = blkOf(w.slot);
+        blk.classList.toggle('over', over > 0);
+        // nextResetTime 可能是 null（过期数据被门控掉了）。直接减会得到负数 → 倒计时显示
+        // 「即将重置」，看着像马上回满，其实是未知——所以先挡成 NaN，走 '--'。
+        const at = win && win.nextResetTime;
+        blk.querySelector('.cd').textContent = F.fmtCountdown(at ? at - Date.now() : NaN);
+      }
+      root.dataset.pace = anyOver ? 'over' : 'ok';
+      $('.notetxt').classList.toggle('hasover', anyOver);
+
+      // 悬停进度条 → 解释幽灵段（与 GLM 同一套文案）
+      for (const w of VOLC_WINS) {
+        const blk = blkOf(w.slot);
+        const bar = blk.querySelector('.pbar');
+        const tip = blk.querySelector('.ptip');
+        const win = alive ? d[w.slot] : null;
+        const pace = pacePercent(win);
+        if (pace == null || !tip) { if (tip) tip.classList.remove('show'); continue; }
+        const over = overOf(win, pace, ctx.config);
+        const line = over > 0
+          ? `<span class="warn">超出预期 ${over.toFixed(1)} 个百分点</span>`
+          : '节奏正常';
+        tip.innerHTML = `预期 ≈ ${Math.round(pace)}% · 实际 ${win.percent}% · ${line}` +
+          '<small>幽灵段 = 按时间均摊，此刻应已用的量</small>' +
+          (over > 0 ? '<small>红色段 = 实际超出预期的那部分</small>' : '');
+        const half = tip.offsetWidth / 2 + 2;
+        const pos = (pace / 100) * bar.clientWidth;
+        tip.style.left = Math.max(half, Math.min(bar.clientWidth - half, pos)) + 'px';
+      }
+
+      // 峰谷徽标：火山套餐按次数计费、不分峰谷，所以恒为「—」（与 GLM 同一段逻辑，peak 为 null）
+      const chip = $('.prov-chip');
+      if (chip) {
+        const peak = ctx.peak ? F.isPeak(ctx.peak, Date.now()) : false;
+        const key = !ctx.peak ? 'none' : peak ? 'peak' : 'off';
+        chip.className = 'chip prov-chip ' + key;
+        chip.title = (ctx.peak && F.PERIOD_NOTE[ctx.peak] ? F.PERIOD_NOTE[ctx.peak] : '') +
+          (peak ? '\n当前：高峰时段' : '\n当前：空闲时段');
+        chip.querySelector('.ctxt').textContent = !ctx.peak ? '—' : peak ? '高峰时段' : '空闲时段';
+      }
+    }
+
+    root.querySelectorAll('.pbar').forEach((bar) => {
+      const tip = bar.querySelector('.ptip');
+      bar.addEventListener('pointerenter', () => tip.classList.add('show'));
+      bar.addEventListener('pointerleave', () => tip.classList.remove('show'));
+    });
+
+    return { el: root, update, tick };
+  }
+
+  const VOLC_CELL = `
+    <span class="dot"></span>
+    <div class="rows">
+      ${VOLC_WINS.map((w) => `
+      <div class="grp"><span class="lab">${w.short}</span><div class="bar"><span class="ghost ${w.ghost}"></span><i class="${w.fill}"></i><span class="ovr ${w.ovr}"></span><span class="edge ${w.edge}"></span></div><b class="pct-${w.slot}">–</b></div>`).join('')}
+    </div>
+    <span class="cap-warn" hidden></span>`;
+
+  /** 一格火山数据：三行 mini bar（5h / 周 / 月），配速每秒由 app 的秒循环带上 */
+  function fillVolcCell(el, acc, ctx) {
+    const d = acc.data;
+    const st = acc.status || 'boot';
+    const alive = !!(d && st === 'ok');
+    let anyOver = false;
+    for (const w of VOLC_WINS) {
+      const win = alive ? d[w.slot] : null;
+      const known = !!(win && win.known);
+      el.style.setProperty('--' + w.css, known ? win.percent : 0);
+      el.querySelector(`.pct-${w.slot}`).textContent = known ? win.percent : '–';
+      const pace = pacePercent(win);
+      const over = overOf(win, pace, ctx.config);
+      el.style.setProperty('--' + w.pace, pace == null ? 0 : pace.toFixed(2));
+      el.style.setProperty('--' + w.over, over.toFixed(2));
+      if (over > 0) anyOver = true;
+    }
+    el.dataset.pace = anyOver ? 'over' : 'ok';
+    if (acc.tier) el.dataset.tier = acc.tier;
+    el.classList.toggle('st-expired', st === 'expired');
+    el.classList.toggle('st-nosub', st === 'nosub');
+    el.classList.toggle('st-loading', st === 'loading' || st === 'boot');
+    const warn = el.querySelector('.cap-warn');
+    warn.textContent = st === 'expired' ? '⚠ 凭据失效' : '⚠ 未开通套餐';
+  }
+
+  function makeVolcCapsule() {
+    const g = capsuleGroup('volc', VOLC_CELL, fillVolcCell);
+    g.el.classList.add('cap-volc');
+    return g;
+  }
+
   window.PANES = {
     glm: { pane: makeGlmPane, capsule: makeGlmCapsule },
     deepseek: { pane: makeDsPane, capsule: makeDsCapsule },
+    volc: { pane: makeVolcPane, capsule: makeVolcCapsule },
   };
 })();

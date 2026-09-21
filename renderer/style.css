@@ -128,6 +128,7 @@ body.no-providers #capsule { min-width: 126px; }   /* 空态提示别缩成一�
 #capsule .cap-acct { display: flex; flex-direction: column; justify-content: center; flex: none; }
 #capsule .cap-data { display: flex; align-items: center; }
 #capsule .cap-glm .cap-data { gap: 5px; }
+#capsule .cap-volc .cap-data { gap: 5px; }
 #capsule .cap-ds .cap-data { gap: 7px; }   /* 数据体与账户 chip 之间的呼吸 */
 #capsule .cap-ds .cap-main {
   display: flex; flex-direction: column; align-items: flex-end;
@@ -162,11 +163,14 @@ body.theme-light #capsule.cap-tiled .cap-sep { background: rgba(23, 28, 45, .22)
 }
 #capsule .bar i.f5 { width: calc(var(--p5, 0) * 1%); }
 #capsule .bar i.fw { width: calc(var(--pw, 0) * 1%); }
+#capsule .bar i.fm { width: calc(var(--pm, 0) * 1%); }
 #capsule .rows b { font-size: 12.5px; font-weight: 700; }
 #capsule .rows b::after { content: "%"; font-size: 9.5px; font-weight: 400; color: var(--ink3); }
-#capsule .glm-warn { display: none; color: #fbbf24; font-size: 11px; white-space: nowrap; }
-#capsule .cap-acct.st-expired .rows { display: none; }
-#capsule .cap-acct.st-expired .glm-warn { display: inline; }
+#capsule .glm-warn, #capsule .cap-warn { display: none; color: #fbbf24; font-size: 11px; white-space: nowrap; }
+/* 失效与「未开通套餐」都藏掉数据行、改说一句人话——两种都不是靠数字能看懂的 */
+#capsule .cap-acct.st-expired .rows, #capsule .cap-acct.st-nosub .rows { display: none; }
+#capsule .cap-acct.st-expired .glm-warn, #capsule .cap-acct.st-expired .cap-warn,
+#capsule .cap-acct.st-nosub .cap-warn { display: inline; }
 #capsule .dsbal { font-size: 13px; font-weight: 700; white-space: nowrap; }
 #capsule .dstoday { font-size: 10px; color: var(--ink3); white-space: nowrap; }
 #capsule .cap-acct.dim { opacity: .55; }
@@ -259,6 +263,7 @@ body.no-providers #capsule .hint-all { display: flex; }
 @keyframes sheen { 45%, 100% { transform: translateX(100%); } }
 #panel .pbar i.f5 { width: calc(var(--p5, 0) * 1%); }
 #panel .pbar i.fw { width: calc(var(--pw, 0) * 1%); }
+#panel .pbar i.fm { width: calc(var(--pm, 0) * 1%); }
 
 /* ============ 预期进度（方案 D）：幽灵斜纹段 + 前沿亮线 ============
    --pace5/--paceW = 按时间均摊，此刻应已用的百分比（每秒随倒计时更新）；
@@ -272,6 +277,7 @@ body.no-providers #capsule .hint-all { display: flex; }
 }
 #panel .pbar .ghost.g5 { width: calc(var(--pace5, 0) * 1%); }
 #panel .pbar .ghost.gW { width: calc(var(--paceW, 0) * 1%); }
+#panel .pbar .ghost.gM { width: calc(var(--paceM, 0) * 1%); }
 #panel .pbar i { position: relative; z-index: 1; }
 
 #panel .pbar .edge, #capsule .bar .edge {
@@ -282,6 +288,7 @@ body.no-providers #capsule .hint-all { display: flex; }
 }
 #panel .pbar .edge.e5, #capsule .bar .edge.e5 { left: calc(var(--pace5, 0) * 1%); }
 #panel .pbar .edge.eW, #capsule .bar .edge.eW { left: calc(var(--paceW, 0) * 1%); }
+#panel .pbar .edge.eM, #capsule .bar .edge.eM { left: calc(var(--paceM, 0) * 1%); }
 
 /* ============ 超预期提醒（需求 2）============
    --over5/--overW = max(0, 实际% − 预期%)，由渲染层每秒算；该窗口没超支时就是 0 宽。
@@ -295,6 +302,7 @@ body.no-providers #capsule .hint-all { display: flex; }
 }
 #panel .pbar .ovr.o5, #capsule .bar .ovr.o5 { left: calc(var(--pace5, 0) * 1%); width: calc(var(--over5, 0) * 1%); }
 #panel .pbar .ovr.oW, #capsule .bar .ovr.oW { left: calc(var(--paceW, 0) * 1%); width: calc(var(--overW, 0) * 1%); }
+#panel .pbar .ovr.oM, #capsule .bar .ovr.oM { left: calc(var(--paceM, 0) * 1%); width: calc(var(--overM, 0) * 1%); }
 #panel .pane[data-pace="over"] .pbar .ovr,
 #capsule .cap-acct[data-pace="over"] .bar .ovr { opacity: 1; }
 
@@ -328,6 +336,13 @@ body.theme-light #panel .pct .overchip { color: #b45309; background: rgba(249, 1
 body.theme-light #panel .blk-note .overtxt { color: #b45309; }
 #panel .pane:not([data-pace="over"]) .blk-note .overtxt { display: none; }
 
+/* 火山脚注要放「套餐名 + 两种都订了/另一种查询失败」的提示，用 flex 排。
+   这样 .overtxt 被 display:none 时既不占位、也不留下串场的分隔符。 */
+#panel .pane-volc .blk-note .notetxt { display: flex; align-items: center; gap: 6px; }
+#panel .pane-volc .blk-note .hint { color: #fdba74; cursor: help; }
+body.theme-light #panel .pane-volc .blk-note .hint { color: #b45309; }
+#panel .pane-volc .pts .rt { font-size: 10px; }
+
 /* 胶囊 mini bar 版本：更细的斜纹与亮线 */
 #capsule .bar { position: relative; overflow: visible; }
 #capsule .bar .ghost {
@@ -335,6 +350,7 @@ body.theme-light #panel .blk-note .overtxt { color: #b45309; }
 }
 #capsule .bar .ghost.g5 { width: calc(var(--pace5, 0) * 1%); }
 #capsule .bar .ghost.gW { width: calc(var(--paceW, 0) * 1%); }
+#capsule .bar .ghost.gM { width: calc(var(--paceM, 0) * 1%); }
 #capsule .bar .edge { top: -2px; bottom: -2px; width: 1px; transform: none; }
 
 /* 浅色主题下的幽灵与亮线 */

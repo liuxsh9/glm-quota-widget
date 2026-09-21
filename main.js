@@ -295,7 +295,32 @@ function clampX(x, w) {
   return Math.min(Math.max(x, wa.x), wa.x + wa.width - w);
 }
 
-function applyView(view) {
+function clampY(y, h) {
+  const wa = workArea();
+  return Math.min(Math.max(y, wa.y), wa.y + wa.height - h);
+}
+
+/** 当前显示器拓扑：排查「胶囊停在已消失的屏幕上」时一眼看清布局 */
+function dumpDisplays() {
+  return screen.getAllDisplays().map((d) => {
+    const b = d.bounds, w = d.workArea;
+    return `#${d.id} ${b.x},${b.y} ${b.width}x${b.height} wa ${w.x},${w.y} ${w.width}x${w.height} @${d.scaleFactor}x`;
+  }).join(' · ');
+}
+
+/** 窗口真实几何 + 可见性：与 applyView 请求的 bounds 可能不一致（透明窗口移动/改尺寸会静默失效） */
+function winState() {
+  if (!win || win.isDestroyed()) return '窗口已销毁';
+  const b = win.getBounds();
+  return `${b.x},${b.y} ${b.width}x${b.height}${win.isVisible() ? '' : ' · 不可见'}`;
+}
+
+/** 强制整窗重绘：透明窗口在显示器变化/睡眠唤醒后偶发整窗空白（全透明 = 看不见） */
+function repaint() {
+  try { win.webContents.invalidate(); } catch { /* 窗口销毁竞态，忽略 */ }
+}
+
+function applyView(view, forceDefaultPos) {
   const prevView = config.view;   // 必须在赋值前抓：判断这次是「换视图」还是「胶囊自身长胖了」
   config.view = view;
   // 展开态按 zoom 等比缩放（内容 setZoomFactor + 窗口尺寸同步乘 zoom）；胶囊保持原始大小
@@ -308,7 +333,7 @@ function applyView(view) {
   if (view === 'capsule') {
     // 胶囊自身尺寸变了（账户增减 / 数字位数变化 / 换布局）：锚住「就近的一边」长出去。
     // 贴在屏幕右侧的挂件变宽时若固定左上角，会向右溢出再被夹回来 —— 视觉上跳一下。
-    const cur = (prevView === 'capsule' && win && !win.isDestroyed()) ? win.getBounds() : null;
+    const cur = (!forceDefaultPos && prevView === 'capsule' && win && !win.isDestroyed()) ? win.getBounds() : null;
     let x = cp.x, y = cp.y;
     if (cur && (cur.width !== s.w || cur.height !== s.h)) {
       const cwa = waFor(cur);
@@ -342,9 +367,11 @@ function applyView(view) {
   win.setResizable(false);
   setImmediate(() => {
     // 改尺寸后安排一次整窗重绘：透明窗口在 Windows 上偶发「长出来的那块没重绘」（看着像下方空白）
-    try { win.webContents.invalidate(); } catch { /* 窗口销毁竞态，忽略 */ }
+    repaint();
     assertTopmost(); // 样式操作可能扰动 z 序，随手自愈
-    log('view →', view, JSON.stringify(b));
+    // 请求的 bounds 和「实际」都打：两者不一致就说明这次移动/改尺寸没生效（静默失效），
+    // 也是唯一能把「窗口不在它以为的地方」和「窗口在那儿但没重绘」分开的证据
+    log('view →', view, JSON.stringify(b), '· 实际', winState());
     broadcast();
   });
 }
@@ -352,6 +379,24 @@ function applyView(view) {
 function setView(view) {
   if (!win) return;
   applyView(view);
+}
+
+/** 自检：把窗口收回工作区、重采样主题，并把真实几何与显示器布局落进日志 */
+function revalidateWindow() {
+  if (!win || win.isDestroyed()) return;
+  applyView(config.view);
+  applyTheme();
+  log('自检 →', winState(), '· 显示器:', dumpDisplays());
+}
+
+/** 找回窗口：位置模型和现实分叉时（拔插屏、唤醒后失踪）一键拉回主屏默认位置 */
+function recallWindow() {
+  if (!win) return;
+  config.pos = null;              // 丢掉可能已经失效的位置记忆 → 回到 defaultPos（主屏右上角）
+  saveConfig();
+  win.showInactive();             // 顺带从最小化/隐藏里恢复（不抢焦点）
+  applyView(config.view, true);   // 强制按默认位置重排，不锚定可能已经跑偏的窗口
+  log('找回窗口 →', winState(), '· 显示器:', dumpDisplays());
 }
 
 /* 置顶自愈：样式操作/拖拽/其他置顶窗口都可能把本窗挤出置顶带，
@@ -481,7 +526,9 @@ function credsView(a) {
   const out = {};
   for (const c of (p ? p.credentials : [])) {
     const v = a.credentials[c.key] || '';
-    out[c.key] = { set: !!v, tail: tail(v) };
+    // 枚举类字段（如「套餐」）不是秘密，得把原值带出去——设置页要据它把下拉选中当前项，
+    // 光有尾号没法回显。秘密字段仍然只给「是否已配 + 尾号」。
+    out[c.key] = c.kind === 'select' ? { set: !!v, tail: tail(v), value: v } : { set: !!v, tail: tail(v) };
   }
   return out;
 }
@@ -761,12 +808,21 @@ function updateTray() {
           let l = `${who}DeepSeek ${money(r.data.balance.total, r.data.balance.currency)}`;
           if (r.data.summary && r.data.summary.today > 0) l += ` · 今日 ${money(r.data.summary.today, r.data.balance.currency)}`;
           lines.push(l);
+        } else if (p.id === 'volc') {
+          const lv = r.data.level ? ` ${levelName(r.data.level)}` : '';
+          const seg = (n, w) => (w && w.known ? `${n} ${w.percent}%` : null);
+          const parts = [seg('5小时', r.data.five), seg('周', r.data.week), seg('月', r.data.month)].filter(Boolean);
+          lines.push(`${who}火山方舟${lv}`);
+          const rst = r.data.five && r.data.five.nextResetTime;
+          if (parts.length) lines.push(parts.join(' · ') + (rst ? ` · ${fmtResetTime(rst)} 重置` : ''));
         } else {
           lines.push(`${who}${p.name}`);
         }
       } else if (r.status === 'expired') lines.push(`${who}${p.name}：凭据已失效，点击更新`);
       else if (r.status === 'ratelimit') lines.push(`${who}${p.name}：限流退避中，稍后自动重试`);
       else if (r.status === 'empty') lines.push(`${who}${p.name}：未配置，点击设置`);
+      // 未开通套餐既不是「配置错」也不是「更新失败」，得单独说——否则这一行根本不出现
+      else if (r.status === 'nosub') lines.push(`${who}${p.name}：未开通套餐，点击设置`);
       else if (r.status === 'error') lines.push(`${who}${p.name}：更新失败`);
     }
   }
@@ -786,6 +842,7 @@ function buildTrayMenu() {
     { label: config.view === 'capsule' ? '展开面板' : '收起为胶囊', click: () => setView(config.view === 'capsule' ? 'panel' : 'capsule') },
     { label: '设置', click: () => setView('settings') },
     { label: '立即刷新', click: () => refresh(true) },
+    { label: '找回窗口', click: recallWindow },   // 拔插屏/唤醒把胶囊搞丢时的自救，不必重启
     { label: '打开日志文件夹', click: () => shell.openPath(app.getPath('userData')) },
     { type: 'separator' },
     { label: '打开官网', click: () => shell.openExternal(OVERVIEW_URL) },
@@ -1036,7 +1093,9 @@ function createWindow() {
   const s = winSize('capsule');
   const p = capsulePos();
   win = new BrowserWindow({
-    x: clampX(p.x, s.w), y: p.y,
+    // 落盘的位置可能属于已经拔掉的屏：两个轴都夹进主屏工作区（只夹 x 的话，
+    // 上一次停在扩展屏下方的 y 会让窗口开局就在屏幕外）
+    x: clampX(p.x, s.w), y: clampY(p.y, s.h),
     width: s.w, height: s.h,
     transparent: true, frame: false,
     resizable: false, thickFrame: false, // 改尺寸在 applyView 里临时解锁，平时锁死以避免系统隐形调节柄
@@ -1281,7 +1340,7 @@ if (!gotLock) {
       accounts: config.accounts.map((a) => `${a.provider}:${a.id}${a.enabled === false ? '(停用)' : ''}`),
       dsSamples: [...dsSamples.entries()].map(([id, arr]) => `${id}:${arr.length}`).join(','),
       savedView: config.view, pos: config.pos,
-    }), '· userData =', app.getPath('userData'));
+    }), '· 显示器:', dumpDisplays(), '· userData =', app.getPath('userData'));
     // 立即应用自启设置（清理遗留或首启）；便携版不支持
     if (!IS_PORTABLE) app.setLoginItemSettings({ openAtLogin: !!config.autoStart, args: ['--hidden'] });
     try { createWindow(); log('window created'); }
@@ -1292,7 +1351,14 @@ if (!gotLock) {
     schedule();
     scheduleDs();
 
-    powerMonitor.on('resume', () => setTimeout(() => { assertTopmost(); refresh(true); }, 5000));
+    powerMonitor.on('resume', () => {
+      setTimeout(() => { assertTopmost(); refresh(true); }, 5000);
+      // 睡眠期间的插拔很可能一个事件都没收到（或收到时桌面还没稳定）：唤醒后再自检两次，
+      // 跨过显示器列表稳定期。第二次比第一次晚，是因为插拔事件本身也可能是错峰到达的
+      for (const delay of [1500, 6000]) setTimeout(revalidateWindow, delay);
+    });
+    // 锁屏期间同样会插拔（锁屏 → 拔屏 → 回家），解锁时补一次
+    powerMonitor.on('unlock-screen', () => setTimeout(revalidateWindow, 1200));
 
     // 置顶看门狗：每 5 秒重申一次，覆盖其他置顶窗口的挤压
     setInterval(assertTopmost, 5000);
@@ -1300,9 +1366,19 @@ if (!gotLock) {
 
     // 背景明暗巡逻：浮窗不动、底下窗口切换（深↔浅）也要跟着换肤；拖拽中不采样
     setInterval(() => { if (!dragging) applyTheme(); }, 20000);
-    screen.on('display-metrics-changed', () => {
-      if (win) { applyView(config.view); applyTheme(); } // 显示器变化后收回工作区内并重采样
-    });
+    // 显示器热插拔/分辨率缩放变化后，把窗口收回工作区内并重采样主题。
+    // 拔屏往往只对被拔的那块屏派发 display-removed（幸存屏度量没变 → metrics-changed 不来），
+    // 插屏同理只派发 display-added：三个事件都得挂，否则胶囊会停在已消失的屏幕上（看不见也点不着）。
+    // 而且这批事件是错峰到达的（一块屏一个、间隔可达几百毫秒），单发即算会在「列表还没稳定」时
+    // 得出一个自以为合法、此后再不复核的位置 —— 所以要跨整批事件防抖
+    let reflowTimer = 0;
+    const reflowDisplays = () => {
+      clearTimeout(reflowTimer);
+      reflowTimer = setTimeout(revalidateWindow, 300);
+    };
+    screen.on('display-metrics-changed', reflowDisplays);
+    screen.on('display-removed', reflowDisplays);
+    screen.on('display-added', reflowDisplays);
 
     app.on('window-all-closed', () => { /* 托盘常驻，不退出 */ });
   });

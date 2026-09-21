@@ -11,11 +11,23 @@
   const { esc, build, hhmm, money } = window.GLMPUI;
   const F = window.GLMFMT;
 
-  const STATE_CLASS = { ok: 'ok', expired: 'bad', error: 'bad', ratelimit: 'bad', empty: 'na', loading: 'na', boot: 'na' };
+  const STATE_CLASS = { ok: 'ok', expired: 'bad', error: 'bad', ratelimit: 'bad', empty: 'na', nosub: 'na', loading: 'na', boot: 'na' };
   const STATE_WORD = {
     ok: '有效', expired: '已失效', error: '更新失败', ratelimit: '限流',
-    empty: '未配置', loading: '验证中…', boot: '验证中…',
+    empty: '未配置', nosub: '未开通套餐', loading: '验证中…', boot: '验证中…',
   };
+
+  /** 账户行显示的凭据尾号。枚举类字段（套餐之类）不是秘密，跳过——不然会冒出「…auto」 */
+  function tailsOf(pid, creds) {
+    return Object.entries(creds || {})
+      .filter(([k, c]) => {
+        if (!c.set) return false;
+        const decl = window.GLMPROV.credOf(pid, k);
+        return !(decl && decl.kind === 'select');
+      })
+      .map(([, c]) => `…${c.tail}`)
+      .join(' · ');
+  }
 
   /** 正在编辑的表单：{ pid, id|null }；开着的时候整个设置页不做重建（免得打字被打断）。
    *  renderRequest 标记「刚请求打开/关闭表单」的那一拍：applySettings 只在这一拍重建。 */
@@ -58,6 +70,17 @@
     const nameVal = isEdit ? esc(acc.name) : '';
     const fields = meta.credentials.map((decl) => {
       const c = isEdit ? (acc.creds[decl.key] || {}) : {};
+      if (decl.kind === 'select') {
+        // 枚举字段（如「套餐」）：下拉呈现。没有「清除」按钮（枚举没有空值语义），
+        // 也不参与剪贴板识别——它不是秘密，是选项。
+        const cur = String(c.value || (decl.options[0] || {}).value || '');
+        return `
+        <label class="clab" for="f-${pid}-${decl.key}">${esc(decl.label)}</label>
+        <select id="f-${pid}-${decl.key}" data-cred="${decl.key}">
+          ${decl.options.map((o) => `<option value="${esc(o.value)}"${o.value === cur ? ' selected' : ''}>${esc(o.label)}</option>`).join('')}
+        </select>
+        ${guideHtml(decl)}`;
+      }
       const ph = c.set
         ? `已保存 ·…${c.tail}（粘贴新值可替换${decl.required ? '' : '，留空不变'}）`
         : decl.placeholder;
@@ -85,10 +108,7 @@
 
   /** 账户行 */
   function rowHtml(pid, a) {
-    const tails = Object.entries(a.creds)
-      .filter(([, c]) => c.set)
-      .map(([, c]) => `…${c.tail}`)
-      .join(' · ');
+    const tails = tailsOf(pid, a.creds);
     return `
       <div class="acc-row ${a.enabled === false ? 'off' : ''}" data-id="${a.id}">
         <span class="adot ${STATE_CLASS[a.status] || 'na'}" title="${esc(accStatusText(a))}"></span>
@@ -110,7 +130,7 @@
           <input type="number" id="threshold" min="1" max="99" step="1" value="80">
         </label>
       </div>
-      <p class="hintline">到阈值进度条变琥珀并弹通知；再高 10 个点变红。</p>
+      <p class="hintline">到阈值进度条变琥珀并弹通知；再高 10 个点变红。<b>配额型 provider（GLM、火山方舟）共用这一份阈值。</b></p>
       <label class="tgl"><input type="checkbox" id="nreset">5 小时额度重置时提醒</label>
       <label class="tgl"><input type="checkbox" id="pacealert" checked>用量超过预期进度时变色提醒</label>`,
     'ds-poll': () => `
@@ -235,9 +255,10 @@
       });
       // 一动手就把上一次的报错收走（用户正在改，别让红字杵着）
       const clearErr = () => { const el = form.querySelector('.formerr'); if (el) el.remove(); };
-      form.querySelectorAll('textarea[data-cred]').forEach((ta) => {
-        ta.addEventListener('input', () => {
-          const chip = form.querySelector(`.clipchip[data-for="${ta.id}"]`);
+      // 下拉也要挂：改了套餐就等于改了输入，红字该收走（select 上 input 事件现代浏览器都会发）
+      form.querySelectorAll('textarea[data-cred], select[data-cred]').forEach((el) => {
+        el.addEventListener('input', () => {
+          const chip = form.querySelector(`.clipchip[data-for="${el.id}"]`);
           if (chip) chip.classList.remove('show');
           clearErr();
         });
@@ -266,6 +287,10 @@
     const credentials = {};
     form.querySelectorAll('textarea[data-cred]').forEach((ta) => {
       credentials[ta.dataset.cred] = ta.value.trim();
+    });
+    // 下拉（套餐之类）：原值直接提交，不走提取器
+    form.querySelectorAll('select[data-cred]').forEach((sel) => {
+      credentials[sel.dataset.cred] = sel.value;
     });
     const next = id
       ? await window.glm.accUpdate({ id, name, credentials })
@@ -296,8 +321,7 @@
       word.textContent = accStatusText({ ...a, status });
       word.className = 'aword ' + (STATE_CLASS[status] || 'na');
       dot.className = 'adot ' + (STATE_CLASS[status] || 'na');
-      const tails = Object.entries(a.creds).filter(([, c]) => c.set).map(([, c]) => `…${c.tail}`).join(' · ');
-      row.querySelector('.atail').textContent = tails;
+      row.querySelector('.atail').textContent = tailsOf(a.provider, a.creds);
     });
     // 全局控件（配额提醒 / 高频采样）
     const th = host.querySelector('#threshold');
