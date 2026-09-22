@@ -212,7 +212,9 @@ const SIZES = {
   settings: { w: 392, h: 712 },  // 内容本身可滚动，窗口高度不再随内容增长
 };
 
-/** 当前有启用账户的 provider（按注册表顺序），胶囊列与此同序 */
+/** 当前有启用账户的 provider（按注册表顺序），胶囊列与此同序。
+ *  这是「这家要不要出场」的唯一口径：**全停用 == 没配**。停用只意味着「别再拉、别展示」，
+ *  账户本身仍留在设置页的列表里（配置视图走 config.accounts，与这里无关）。 */
 function activeProviders() {
   return providers.list.filter((p) => enabledOf(p.id).length > 0);
 }
@@ -234,7 +236,7 @@ function winSize(view) {
     // 实测优先（渲染层按两个页签里高的那个报）：换字体/换系统时行高会差几像素，
     // 写死的高度不是把 chips 行裁掉、就是在底部多出一截空白。兜底才用 meta 估。
     if (panelBoxH > 0) return { w: s.w + PAD * 2, h: panelBoxH + PAD * 2 };
-    const multi = providers.list.some((p) => config.accounts.filter((a) => a.provider === p.id).length > 1);
+    const multi = activeProviders().some((p) => config.accounts.filter((a) => a.provider === p.id).length > 1);
     return { w: s.w + PAD * 2, h: s.h + PAD * 2 + (multi ? ACC_ROW_H : 0) };
   }
   const s = SIZES[view] || SIZES.panel;
@@ -534,18 +536,19 @@ function credsView(a) {
 }
 
 function panelTabResolved() {
-  if (providers.byId(config.panelTab) && config.accounts.some((a) => a.provider === config.panelTab)) {
-    return config.panelTab;
-  }
-  const first = providers.list.find((p) => config.accounts.some((a) => a.provider === p.id));
+  // 只认「有启用账户」的页签：停用的 provider 没有页签，得顺到还出场的那家去，
+  // 否则页签全不高亮、面板是一片空白
+  if (providers.byId(config.panelTab) && enabledOf(config.panelTab).length) return config.panelTab;
+  const first = activeProviders()[0];
   return first ? first.id : 'glm';
 }
 
 function buildState() {
   const provState = {};
-  for (const p of providers.list) {
+  for (const p of activeProviders()) {
     const accs = config.accounts.filter((a) => a.provider === p.id);
-    if (!accs.length) continue;   // 只下发配了账户的 provider（渲染层据此出页签/胶囊列）
+    // 停用的账户仍在下发（有多账户时要在 chips 行里灰着显示），但「全停用」的 provider
+    // 整家不出场：渲染层的页签/胶囊列都以 providers 的键为准
     provState[p.id] = {
       name: p.name,
       tab: p.tab,
@@ -792,9 +795,9 @@ function money(n, currency) {
 function updateTray() {
   if (!tray) return;
   const lines = [];
-  for (const p of providers.list) {
-    const accs = config.accounts.filter((a) => a.provider === p.id);
-    if (!accs.length) continue;
+  for (const p of activeProviders()) {
+    // 停用的账户不进托盘：它早就不拉了，留着只会杵着一条不再更新的陈旧读数
+    const accs = enabledOf(p.id);
     const named = accs.length > 1;
     for (const a of accs) {
       const who = named ? `「${a.name}」` : '';
@@ -986,6 +989,7 @@ function accUpdate({ id, name, enabled, credentials }) {
   const acc = getAcc(id);
   if (!acc) return { err: '账户不存在' };
   if (typeof name === 'string' && name.trim()) acc.name = name.trim();
+  const wasEnabled = acc.enabled !== false;
   if (enabled != null) acc.enabled = !!enabled;
   const before = JSON.stringify(acc.credentials);
   if (credentials) {
@@ -1000,14 +1004,17 @@ function accUpdate({ id, name, enabled, credentials }) {
     acc.credentials = cleanCredentials(acc.provider, credentials, acc.credentials);
   }
   const credsChanged = before !== JSON.stringify(acc.credentials);
+  const reEnabled = acc.enabled && !wasEnabled;
   afterAccountsChanged();
-  if (credsChanged) {
+  // 重新启用也要立刻拉一次：停用期间那个账户一次都没刷过，沿用旧读数会让刚复活的胶囊
+  // 显示一个几小时前的数字。凭据变更同理。
+  if (credsChanged || reEnabled) {
     const r = rtOf(acc);
     r.status = Object.keys(acc.credentials).length ? 'loading' : 'empty';
     r.msg = '';
     refreshAccount(acc).then(broadcast);
   }
-  log('账户更新 ·', acc.provider, acc.id, credsChanged ? '(凭据变更)' : '');
+  log('账户更新 ·', acc.provider, acc.id, credsChanged ? '(凭据变更)' : (reEnabled ? '(重新启用)' : ''));
   return { ok: true };
 }
 

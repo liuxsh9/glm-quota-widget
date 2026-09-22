@@ -187,8 +187,12 @@ window.glm = {
     }
     return window.__state; },
   accActivate: async (p) => {
-    window.__activated = p;
-    window.__state.providers[p.provider].activeId = p.id;
+    window.__activated = p;   // 记下「谁发过切换请求」——被拒的请求也留痕，测试据此看死循环
+    const prov = window.__state.providers[p.provider] || { accounts: [] };
+    const acc = prov.accounts.find(a => a.id === p.id);
+    // 与主进程一致：停用的账户切不过去（返回 { err }，前端不该拿它当新状态）
+    if (!acc || acc.enabled === false) return { err: '账户不存在或未启用' };
+    prov.activeId = p.id;
     window.__state.config.active[p.provider] = p.id;
     return window.__state;
   },
@@ -740,6 +744,31 @@ with sync_playwright() as p:
     fit_window(pg)
     t("切回切换布局：又只剩一格", pg.locator("#capsule .cap-glm .cap-acct").count() == 1)
 
+    print("停用的账户不进切换器:")
+    set_dev(pg, """const acc3 = { id:'a3', name:'停用号', enabled:false, status:'ok', msg:'', lastFetchAt: Date.now(), data: null };
+      s.providers.glm.accounts.push(acc3);
+      s.config.accounts.push({ id:'a3', provider:'glm', name:'停用号', enabled:false,
+        creds:{ token:{ set:true, tail:'offxxx' } } });""")
+    pg.wait_for_timeout(150)
+    # 当前账户是 a2，列表里紧挨着的下一个正是停用的 a3 —— 修之前滚轮从这里再也回不到 a1
+    # （切 a3 被主进程拒 → 当前账户没变 → 下次又切 a3）。所以滚一下必须落到 a1
+    box = pg.locator("#capsule .cap-glm").bounding_box()
+    pg.mouse.move(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
+    pg.mouse.wheel(0, 100)
+    pg.wait_for_timeout(150)
+    t("滚轮跳过停用账户，直接切到下一个启用的（a1）",
+      (pg.evaluate("window.__activated") or {}).get("id") == "a1",
+      str(pg.evaluate("window.__activated")))
+    push(pg, view="panel")
+    pg.wait_for_function("document.body.className.includes('view-panel')")
+    pg.set_viewport_size({"width": PANEL_GLM[0], "height": PANEL_GLM[1] + 26})
+    pg.wait_for_timeout(150)
+    t("停用的账户仍列在 chips 行里（灰着，不是删掉配置）",
+      pg.locator("#accRow .acc-chip[data-id='a3'].acc-chip-off").count() == 1)
+    set_dev(pg, """s.providers.glm.accounts = s.providers.glm.accounts.filter(a => a.id !== 'a3');
+      s.config.accounts = s.config.accounts.filter(a => a.id !== 'a3');""")
+    pg.wait_for_timeout(150)
+
     print("设置页的「胶囊布局」开关:")
     push(pg, view="settings")
     pg.wait_for_function("document.body.className.includes('view-settings')")
@@ -1165,6 +1194,30 @@ with sync_playwright() as p:
     t("AK/SK 尾号仍然显示", "xxxxxx" in pg.text_content("#provSecs .acc-row[data-id='v1'] .atail"))
     pg.locator("form.acc-form .fcancel").click()
     pg.wait_for_timeout(150)
+
+    # ---- 停用唯一账户 = 整家不出场 ----
+    # 主进程那边停用后就不再把这家放进 providers（只留在 config.accounts 里）：
+    # 页签和胶囊列跟着 providers 的键走，设置页的账户行跟着 accounts 走。
+    pg.evaluate("""() => {
+      const s = window.__state;
+      s.config.accounts.find(a => a.id === 'v1').enabled = false;
+      delete s.providers.volc;
+      delete s.config.active.volc;
+      s.config.panelTab = 'glm';
+      window.__cb(s);
+    }""")
+    pg.wait_for_timeout(200)
+    t("停用后设置页仍有这一行（停用的是展示，不是配置）",
+      pg.locator("#provSecs .acc-row[data-id='v1']").count() == 1)
+    t("这一行标着「已停用」、按钮翻成「启用」",
+      pg.text_content("#provSecs .acc-row[data-id='v1'] .aword") == "已停用"
+      and pg.text_content("#provSecs .acc-row[data-id='v1'] [data-act='toggle']") == "启用")
+    pg.evaluate("() => { window.__state.view = 'capsule'; window.__cb(window.__state); }")
+    pg.wait_for_timeout(200)
+    t("胶囊回到两列（火山那列收掉）", pg.locator("#capsule .cap-grp").count() == 2)
+    t("分隔线只剩一条", pg.locator("#capsule .cap-sep").count() == 1)
+    t("面板页签也回到两个", pg.locator("#tabs .tab").count() == 2)
+    t("页签里没有「火山」", pg.locator("#tabs .tab", has_text="火山").count() == 0)
 
     print("provider 元数据（GLMPROV）:")
     t("三家注册且 id 正确", pg.evaluate("GLMPROV.list.map(p => p.id).join()") == "glm,deepseek,volc")

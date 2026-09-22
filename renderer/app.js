@@ -271,6 +271,13 @@ function renderCapsule(s) {
   syncCapsuleSize();
 }
 
+/** 可切换的账户 = 启用的那些。停用的账户切不过去（主进程会拒），留在环里会把滚轮
+ *  卡死：从当前账户往下滚正好撞上它，被拒后当前账户没变，下一次又撞上同一个。 */
+function switchableAccs(pid) {
+  const prov = st && st.providers[pid];
+  return prov ? prov.accounts.filter((a) => a.enabled !== false) : [];
+}
+
 /** 胶囊列上的滚轮：多账户时循环切换该 provider 的当前账户（不想开菜单时的快手势） */
 function bindCapsuleWheel(s) {
   const cap = $('#capsule');
@@ -278,8 +285,7 @@ function bindCapsuleWheel(s) {
     const pid = col.dataset.pid;
     col.addEventListener('wheel', (e) => {
       if (e.ctrlKey) return;
-      const prov = st && st.providers[pid];
-      if (!prov || prov.accounts.length < 2) return;
+      if (switchableAccs(pid).length < 2) return;   // 没得切就别吃掉滚轮
       e.preventDefault();
       cycleAccount(pid, e.deltaY > 0 ? 1 : -1);
     }, { passive: false });
@@ -287,10 +293,10 @@ function bindCapsuleWheel(s) {
 }
 
 async function cycleAccount(pid, dir) {
-  const prov = st && st.providers[pid];
-  if (!prov || prov.accounts.length < 2) return;
-  const idx = prov.accounts.findIndex((a) => a.id === prov.activeId);
-  const next = prov.accounts[(idx + dir + prov.accounts.length) % prov.accounts.length];
+  const list = switchableAccs(pid);
+  if (list.length < 2) return;
+  const idx = list.findIndex((a) => a.id === (st.providers[pid] || {}).activeId);
+  const next = list[(idx + dir + list.length) % list.length];
   window.GLMPUI.activate(pid, next.id);
 }
 

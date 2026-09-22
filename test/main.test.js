@@ -286,6 +286,36 @@ async function settle(timeoutMs = 30000) {
   const act2 = await call('acc:activate', { provider: 'glm', id: keptId });
   t('激活启用账户成功', !act2.err && act2.providers.glm.activeId === keptId);
 
+  console.log('\n停用 = 整家不出场（胶囊列 / 面板页签 / 托盘一起收）:');
+  // 火山是「单账户 provider」的代表：唯一那个账户一停用，这家整家都得从展示面上消失，
+  // 只留在设置页的账户清单里（曾经是账号停用了、胶囊列和页签还杵在那儿显示旧读数）
+  const volcAdd = await call('acc:add', {
+    provider: 'volc', name: '火山一号',
+    credentials: { accessKeyId: 'AKLTtestAccessKeyId0000000', accessKeySecret: 's'.repeat(32), plan: 'coding' },
+  });
+  t('火山账户添加成功', !volcAdd.err && !!volcAdd.providers.volc, JSON.stringify(volcAdd.err));
+  const volcId = volcAdd.providers.volc.accounts[0].id;
+  t('三家都在场时 providers 有 3 家',
+    Object.keys(volcAdd.providers).length === 3, JSON.stringify(Object.keys(volcAdd.providers)));
+  await call('tab:set', 'volc');
+  t('切到火山页签', (await state()).config.panelTab === 'volc');
+
+  const volcOff = await call('acc:update', { id: volcId, enabled: false });
+  t('停用唯一账户后这家从 providers 里消失（胶囊列/页签一起收）',
+    !volcOff.providers.volc && Object.keys(volcOff.providers).length === 2, JSON.stringify(Object.keys(volcOff.providers)));
+  t('收的只是「展示」不是「配置」：账户仍在设置页的清单里',
+    (volcOff.config.accounts.find((a) => a.id === volcId) || {}).enabled === false);
+  t('active 映射同步清掉', !volcOff.config.active.volc);
+  t('页签顺延到还在场的一家（不留一个点不开的空页签）',
+    volcOff.config.panelTab !== 'volc' && !!volcOff.providers[volcOff.config.panelTab], volcOff.config.panelTab);
+  t('托盘也不再有这家那一行', !/火山方舟/.test(trayTip), JSON.stringify(trayTip));
+
+  const volcBack = await call('acc:update', { id: volcId, enabled: true });
+  t('重新启用后这家回到 providers',
+    !!volcBack.providers.volc && Object.keys(volcBack.providers).length === 3);
+  await call('acc:remove', { id: volcId });   // 还原现场：后面的「删光账户」用例要数得准
+  await call('tab:set', 'glm');
+
   console.log('\n剪贴板识别（按 provider 声明）:');
   electronStub.clipboard.readText = () => `Cookie: bigmodel_token_production=${FAKE_GLM}; Bearer ${FAKE_DS}`;
   const peek = await call('clipboard:peek');
