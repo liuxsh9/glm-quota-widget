@@ -1,10 +1,15 @@
 #!/usr/bin/env python3
 """渲染层测试：mock window.glm 桥，验证 胶囊(多列)/面板(动态页签+账户chips)/设置(账户管理) 各状态与交互
 （经本地 HTTP 提供页面，并仅在测试中剥掉 CSP 以便 evaluate 推送状态）"""
-import pathlib, sys, re, threading, functools, http.server, json
+import pathlib, sys, re, threading, functools, http.server, json, os
 from playwright.sync_api import sync_playwright
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
+
+# 钉死页面时钟的默认时刻：与 tools/shots.py 同一个时间戳（2026-09-14 周一 10:30 北京时间 ——
+# 工作日 9–12 点，正是一家高峰一家空闲的恶劣时刻）。可用 TEST_NOW_MS 覆盖：验收靠
+# 「换个时刻各跑一遍、结论不变」证明整套测试与挂钟无关，而不是只验证「现在绿」。
+FIXED_NOW = int(os.environ.get("TEST_NOW_MS", "1789353000000"))
 
 serve = functools.partial(http.server.SimpleHTTPRequestHandler, directory=str(ROOT))
 srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), serve)
@@ -52,8 +57,6 @@ def capsule_pad(pg):
         return { l: +Math.min(...boxes.map(b => b.left)).toFixed(2) - card.left,
                  r: card.right - +Math.max(...boxes.map(b => b.right)).toFixed(2) };
       }""")
-
-NOW_EXPR = "Date.now()"
 
 
 def make_state():
@@ -151,6 +154,7 @@ window.__glmData = JSON.parse(JSON.stringify(glmData));
 window.__view = null; window.__saved = null; window.__tab = null; window.__tray = null; window.__clip = null;
 window.__ready = false; window.__ctx = 0; window.__activated = null;
 window.__capSize = null; window.__capSizes = []; window.__menu = null; window.__panelSize = null; window.__panelSizes = [];
+window.__dockSize = null; window.__dockSizes = [];
 window.__dragStart = null; window.__dragMove = 0; window.__dragEnd = 0;
 // 与主进程一致的最小凭据校验：填了但形态不对 → 桥返回 { err }（用来测「静默失败」那条链路）
 const REQ = { glm: { token: /[A-Za-z0-9]{16,}\\.[A-Za-z0-9]{12,}|ey[A-Za-z0-9_-]{10,}\\./ },
@@ -198,6 +202,7 @@ window.glm = {
   },
   accMenu: async (p) => { window.__menu = p; return window.__state; },   // 原生菜单：只记请求
   capsuleSize: (s) => { window.__capSize = s; window.__capSizes.push(s); },
+  dockSize: (s) => { window.__dockSize = s; window.__dockSizes.push(s); },   // 贴边列实测尺寸上报
   panelSize: (s) => { window.__panelSize = s; window.__panelSizes = (window.__panelSizes || []).concat([s]); },
   setView: (v) => { window.__view = v; window.__state.view = v; },
   setTab: (t) => { window.__tab = t; window.__state.config.panelTab = t; },
@@ -228,11 +233,19 @@ def set_dev(pg, js):
     """在 evaluate 里改状态并推送（js 里用 s.providers.glm.accounts[0].data 这类路径）"""
     pg.evaluate("() => { const s = window.__state; %s window.__cb(s); }" % js)
 
+def settle(pg, ms=450):
+    """等渲染层的过渡跑完：圆环的 stroke / stroke-dashoffset 都有 0.35s 过渡，
+    颜色与弧长的断言要等它落定（否则读到的是过渡中间值）"""
+    pg.wait_for_timeout(ms)
+
 
 with sync_playwright() as p:
     b = p.chromium.launch()
     ctx = b.new_context(viewport={"width": CAP_BOTH[0], "height": CAP_BOTH[1]})
     ctx.route("**/renderer/index.html", lambda r: r.fulfill(body=HTML_NOCSP, content_type="text/html; charset=utf-8"))
+    # 页面脚本加载前先钉死时钟：页里所有 Date.now()（倒计时 / 峰谷徽标 / 图表分桶 / INIT 里
+    # 测试自己注入的 NOW）都落在 FIXED_NOW，与运行时刻无关。注册序 = 执行序，必须在 INIT 之前
+    ctx.add_init_script(f"Date.now = () => {FIXED_NOW};")
     ctx.add_init_script(INIT)
     pg = ctx.new_page()
     pg.goto(PAGE)
@@ -576,9 +589,20 @@ with sync_playwright() as p:
       g["chipRight"] is not None and d["chipRight"] is not None
       and abs(g["chipRight"] - d["chipRight"]) < 0.6 and abs(g["chipLeft"] - d["chipLeft"]) < 0.6,
       f'{g["chipLeft"]}..{g["chipRight"]} vs {d["chipLeft"]}..{d["chipRight"]}')
-    t("两页签的峰谷徽标同一套文案",
-      g["chipText"] in ("高峰时段", "空闲时段") and d["chipText"] == g["chipText"],
+    # 同一套词汇：各自 ∈ {高峰时段, 空闲时段}，而不是「同一时刻两家文案相等」—— 两家高峰窗口
+    # 本来就不同（DS 9–12/14–18、GLM 14–18），工作日 10:30 这类时刻就该一家高峰一家空闲。
+    # 「两家同为高峰（如周一 15:30）时文案相同」：把 TEST_NOW_MS 定到该时刻重跑，由下面
+    # 这条「文案 = isPeak 词汇」的断言直接推出两家都是「高峰时段」。
+    t("两页签的峰谷徽标同一套文案（各自 ∈ 高峰/空闲）",
+      g["chipText"] in ("高峰时段", "空闲时段") and d["chipText"] in ("高峰时段", "空闲时段"),
       f'{g["chipText"]} / {d["chipText"]}')
+    t("徽标文案 = 钉死时钟下 isPeak(各自) 推的词汇（两家同为高峰的时刻 → 两家同为「高峰时段」）",
+      pg.evaluate("""(now) => {
+          const txt = (sel) => document.querySelector(sel).textContent;
+          const want = (pid) => GLMFMT.isPeak(pid, now) ? '高峰时段' : '空闲时段';
+          return txt('#panel .pane-glm .prov-chip .ctxt') === want('glm')
+              && txt('#panel .pane-ds .prov-chip .ctxt') === want('ds');
+        }""", FIXED_NOW))
     pg.evaluate("() => { window.__state.config.panelTab = 'deepseek'; window.__cb(window.__state); }")
     pg.wait_for_timeout(120)
 
@@ -1224,6 +1248,353 @@ with sync_playwright() as p:
     t("凭据声明驱动设置页", pg.evaluate("GLMPROV.byId('deepseek').credentials.length") == 2)
     t("火山的套餐是下拉字段（带选项）", pg.evaluate("(() => { const c = GLMPROV.byId('volc').credentials.find(c => c.key === 'plan'); return c && c.kind === 'select' && c.options.length; })()") == 3)
     t("胶囊列宽已声明", pg.evaluate("GLMPROV.byId('glm').capsuleW") > 0)
+
+    # ---- 贴边模式（dock）：圆圈列 / 造型 / 交互 ----
+    print("贴边模式（dock）· 圆圈列:")
+    pg.evaluate("""() => {
+      const s = window.__state, NOW = Date.now();
+      const glmAcc = (id, name, pct) => {          // 每圈一个 GLM 号（窗口 5h 的口径）
+        const d = JSON.parse(JSON.stringify(window.__glmData));
+        d.five.percent = pct;
+        return { id, name, enabled: true, status: 'ok', msg: '', lastFetchAt: NOW, tier: 'low',
+                 dock: { metric: 'five' }, data: d };
+      };
+      const dsData = JSON.parse(JSON.stringify(s.providers.deepseek.accounts[0].data));
+      dsData.summary.today = 12.4;                 // 今日 ¥12.4 ÷ 预算 ¥20 → 62%
+      s.providers.glm.accounts = [
+        glmAcc('a1', '主号', 41), glmAcc('a2', '备用号', 78),
+        { id: 'a3', name: '停用号', enabled: false, status: 'ok', msg: '', lastFetchAt: NOW, data: null },
+      ];
+      s.providers.glm.activeId = 'a1';
+      s.providers.deepseek.accounts = [
+        { id: 'd1', name: 'DeepSeek', enabled: true, status: 'ok', msg: '', lastFetchAt: NOW,
+          data: dsData, dock: { metric: 'today', budget: 20 } },
+      ];
+      s.providers.deepseek.activeId = 'd1';
+      s.view = 'dock'; s.theme = 'dark'; s.config.dockSide = 'right'; s.config.panelTab = 'glm';
+      window.__view = null; window.__tab = null; window.__activated = null;
+      window.__dockSize = null; window.__dockSizes = [];
+      window.__cb(s);
+    }""")
+    settle(pg)
+    t("body 挂上 view-dock + 贴边侧", pg.evaluate(
+      "document.body.classList.contains('view-dock') && document.body.classList.contains('dock-right')"))
+    t("恰好 3 个圆圈（停用的账户不出场）", pg.locator("#dock .dc").count() == 3)
+    t("顺序 = provider 注册表序 + 账户原序（GLM、GLM、DS）", pg.evaluate(
+      "[...document.querySelectorAll('#dock .dc')].map(e => e.dataset.pid + ':' + e.dataset.accId).join()")
+      == "glm:a1,glm:a2,deepseek:d1")
+    t("停用的账户真的不在列里", pg.evaluate(
+      "[...document.querySelectorAll('#dock .dc')].every(e => e.dataset.accId !== 'a3')"))
+    t("数字 41% / 78% / 62%（DS：今日 12.4 ÷ 预算 20）", pg.evaluate(
+      "[...document.querySelectorAll('#dock .dc .dc-pct')].map(e => e.textContent).join()") == "41%,78%,62%")
+    t("每圈环色 = 页面里 GLMDOCK.ringColor(对应 pct)", pg.evaluate("""() => {
+        const got = [...document.querySelectorAll('#dock .dc')].map(el => [el.dataset.accId,
+          getComputedStyle(el.querySelector('.dc-arc')).stroke]);
+        const want = [['a1', GLMDOCK.ringColor(41)], ['a2', GLMDOCK.ringColor(78)], ['d1', GLMDOCK.ringColor(62)]];
+        return got.length === 3 && want.every(([id, c], i) => got[i][0] === id && got[i][1] === c);
+      }"""), str(pg.evaluate("[...document.querySelectorAll('#dock .dc .dc-arc')].map(e => getComputedStyle(e).stroke)")))
+    t("三圈弧色互不相同（跟着各自百分比走，不是写死一色）", pg.evaluate(
+      "new Set([...document.querySelectorAll('#dock .dc .dc-arc')].map(e => getComputedStyle(e).stroke)).size") == 3)
+    t("弧长按比例：41% / 78% 对应 dashoffset", pg.evaluate("""() => {
+        const C = 2 * Math.PI * 18.25;
+        const off = id => parseFloat(document.querySelector(`#dock .dc[data-acc-id='${id}'] .dc-arc`)
+          .getAttribute('stroke-dashoffset'));
+        return Math.abs(off('a1') - C * (1 - 0.41)) < 0.1 && Math.abs(off('a2') - C * (1 - 0.78)) < 0.1;
+      }"""))
+    t("每个圆圈里都有 logo 的 <svg>（三家各 1 个）", pg.evaluate(
+      "[...document.querySelectorAll('#dock .dc .dc-logo svg')].length") == 3)
+    t("三家 logo 渲染尺寸一致（都是 18×18）", pg.evaluate("""() => {
+        const b = [...document.querySelectorAll('#dock .dc .dc-logo svg')].map(e => e.getBoundingClientRect());
+        return b.length === 3 && b.every(r => Math.abs(r.width - 18) < 0.01 && Math.abs(r.height - 18) < 0.01);
+      }"""))
+    t("logo 跟着 provider 走：两个 GLM 圈同图，DeepSeek 圈是另一家的", pg.evaluate("""() => {
+        const d = [...document.querySelectorAll('#dock .dc')].map(el =>
+          el.querySelector('.dc-logo svg path').getAttribute('d'));
+        return d.length === 3 && d[0] === d[1] && d[0] !== d[2] && !!d[2];
+      }"""))
+    t("三家 logo 同一颜色（吃主题前景色，没有特殊着色）", pg.evaluate(
+      "new Set([...document.querySelectorAll('#dock .dc .dc-logo svg')].map(e => getComputedStyle(e).fill)).size") == 1)
+    t("每个圆圈带原生 title（账户名 · 口径 label，悬停详情是下一张单）", pg.evaluate(
+      "[...document.querySelectorAll('#dock .dc')].map(e => e.title).join(' | ')")
+      == "主号 · 5 小时额度 | 备用号 · 5 小时额度 | DeepSeek · 今日",
+      str(pg.evaluate("[...document.querySelectorAll('#dock .dc')].map(e => e.title)")))
+
+    print("贴边模式（dock）· 没有数 / 过期 / 超预算:")
+    set_dev(pg, "s.providers.deepseek.accounts[0].dock = { metric: 'today', budget: null };")
+    settle(pg)
+    t("没填预算 → 数字 –", pg.text_content("#dock .dc[data-acc-id='d1'] .dc-pct") == "–")
+    t("没填预算 → 灰环（只留底环，不画彩色弧）", pg.evaluate("""() => {
+        const el = document.querySelector("#dock .dc[data-acc-id='d1']");
+        const arc = el.querySelector('.dc-arc');
+        return el.classList.contains('dc-none') && !arc.getAttribute('stroke')
+          && Math.abs(parseFloat(arc.getAttribute('stroke-dashoffset'))
+                      - parseFloat(arc.getAttribute('stroke-dasharray'))) < 0.02;
+      }"""))
+    set_dev(pg, "s.providers.deepseek.accounts[0].dock = { metric: 'today', budget: 20 };"
+                " s.providers.deepseek.accounts[0].data.summary.today = 30;")   # 30 / 20 = 150%
+    settle(pg)
+    t("超预算 → 数字讲真话 150%（不被夹成 100%）", pg.text_content("#dock .dc[data-acc-id='d1'] .dc-pct") == "150%")
+    t("超预算 → 弧长仍是满圈（比例夹在 100 画弧）", pg.evaluate(
+      "parseFloat(document.querySelector(\"#dock .dc[data-acc-id='d1'] .dc-arc\").getAttribute('stroke-dashoffset')) === 0"))
+    set_dev(pg, "s.providers.deepseek.accounts[0].data.summary.today = 12.4;")
+    settle(pg)
+    t("回到预算内 → 62% 的淡黄绿", pg.text_content("#dock .dc[data-acc-id='d1'] .dc-pct") == "62%"
+      and pg.evaluate("getComputedStyle(document.querySelector(\"#dock .dc[data-acc-id='d1'] .dc-arc\")).stroke === GLMDOCK.ringColor(62)"))
+    set_dev(pg, "s.providers.glm.accounts[1].status = 'expired';")
+    settle(pg)
+    t("过期 → 灰环（弧色 = 主题里的中性灰变量，不是 ringColor 的彩色）+ 警示角标", pg.evaluate("""() => {
+        const el = document.querySelector("#dock .dc[data-acc-id='a2']");
+        const cs = getComputedStyle(el.querySelector('.dc-arc'));
+        const probe = document.createElement('i');       // 把 --ring-dim 解析成具体颜色来比
+        probe.style.color = 'var(--ring-dim)';
+        document.querySelector('#dock').appendChild(probe);
+        const want = getComputedStyle(probe).color;
+        probe.remove();
+        const badge = el.querySelector('.dc-badge');
+        return el.classList.contains('dc-warn') && cs.stroke === want && want !== GLMDOCK.ringColor(78)
+          && !!badge && badge.offsetParent !== null;
+      }"""), str(pg.evaluate("getComputedStyle(document.querySelector(\"#dock .dc[data-acc-id='a2'] .dc-arc\")).stroke")))
+    t("没过期的圆圈不受牵连（仍是彩色弧、没有角标）", pg.evaluate("""() => {
+        const el = document.querySelector("#dock .dc[data-acc-id='a1']");
+        return !el.classList.contains('dc-warn')
+          && getComputedStyle(el.querySelector('.dc-arc')).stroke === GLMDOCK.ringColor(41)
+          && el.querySelector('.dc-badge').offsetParent === null;
+      }"""))
+    set_dev(pg, "s.providers.glm.accounts[1].status = 'ok';")
+    settle(pg)
+    t("状态恢复 → 又是彩色弧（灰环不是一次性的）", pg.evaluate(
+      "getComputedStyle(document.querySelector(\"#dock .dc[data-acc-id='a2'] .dc-arc\")).stroke === GLMDOCK.ringColor(78)"))
+
+    print("贴边模式（dock）· 数值变化不重建圆圈:")
+    pg.evaluate("() => { [...document.querySelectorAll('#dock .dc')].forEach((e, i) => { e.__mark = 'm' + i; }); }")
+    set_dev(pg, "s.providers.glm.accounts[0].data.five.percent = 55;")
+    settle(pg)
+    t("同一个 DOM 节点（圆圈没被重建）", pg.evaluate(
+      "[...document.querySelectorAll('#dock .dc')].map(e => e.__mark).join()") == "m0,m1,m2")
+    t("数字跟着新状态变 41% → 55%", pg.text_content("#dock .dc[data-acc-id='a1'] .dc-pct") == "55%")
+    t("弧色也跟着变（ringColor(55)）", pg.evaluate(
+      "getComputedStyle(document.querySelector(\"#dock .dc[data-acc-id='a1'] .dc-arc\")).stroke === GLMDOCK.ringColor(55)"))
+    set_dev(pg, "s.providers.glm.accounts[0].data.five.percent = 41;")
+    settle(pg)
+
+    print("贴边模式（dock）· 尺寸上报:")
+    t("window.__dockSize 上报且 = #dock 实测尺寸", pg.evaluate("""() => {
+        const r = document.querySelector('#dock').getBoundingClientRect();
+        const s = window.__dockSize, call = window.__dockSizes[window.__dockSizes.length - 1];
+        return !!s && s.w === Math.ceil(r.width) && s.h === Math.ceil(r.height)
+          && window.__dockSizes.length > 0 && call && call.w === s.w && call.h === s.h;
+      }"""), str(pg.evaluate("[window.__dockSize, window.__dockSizes]")))
+    t("反向圆角的延伸区算在高度里：造型 bbox 撑满上报高度，圆圈排在延伸区下面", pg.evaluate("""() => {
+        const el = document.querySelector('#dock');
+        const r = el.getBoundingClientRect();
+        const bb = el.querySelector('.dock-edge path').getBBox();
+        const first = document.querySelector('#dock .dc-top').getBoundingClientRect();
+        return Math.abs(bb.height - r.height) < 1.5 && Math.abs(bb.width - r.width) < 1.5
+          && (first.top - r.top) >= 14;
+      }"""), str(pg.evaluate("""() => { const el = document.querySelector('#dock');
+          const bb = el.querySelector('.dock-edge path').getBBox();
+          return [bb.width, bb.height, el.getBoundingClientRect().height]; }""")))
+
+    print("贴边模式（dock）· 造型（贴边侧反向圆角 / 远端正常圆角）:")
+    GEOM = """() => {
+        const el = document.querySelector('#dock');
+        const path = el.querySelector('.dock-edge path');
+        const r = el.getBoundingClientRect();
+        const w = r.width, h = r.height;
+        // ① 解析 d 拿竖直直线段（贴边侧那条）
+        const toks = path.getAttribute('d').match(/[A-Za-z]|-?\\d*\\.?\\d+/g) || [];
+        const NP = { M: 2, H: 1, V: 1, A: 7, Z: 0 };
+        let i = 0, cmd = null, x = 0, y = 0, verts = [];
+        while (i < toks.length) {
+          if (/[A-Za-z]/.test(toks[i])) { cmd = toks[i].toUpperCase(); i++; if (cmd === 'Z') continue; }
+          const n = NP[cmd] || 2;
+          const v = toks.slice(i, i + n).map(Number); i += n;
+          if (cmd === 'M') { x = v[0]; y = v[1]; }
+          else if (cmd === 'H') { x = v[0]; }
+          else if (cmd === 'V') { verts.push([x, y, v[0]]); y = v[0]; }
+          else if (cmd === 'A') { x = v[5]; y = v[6]; }
+        }
+        const longest = verts.slice().sort((a, b) => Math.abs(b[2] - b[1]) - Math.abs(a[2] - a[1]))[0];
+        // ② 沿真路径取样（getPointAtLength），量两个上角附近的边界：
+        //    贴边侧那个角（屏幕边上）离边界多远 vs 远端那个角离边界多远
+        const side = document.body.classList.contains('dock-left') ? 'left' : 'right';
+        const corner = side === 'left' ? { x: 0, y: 0 } : { x: w, y: 0 };   // 屏幕边缘上的上角
+        const far = side === 'left' ? { x: w, y: 0 } : { x: 0, y: 0 };      // 远离屏幕的上角
+        const L = path.getTotalLength();
+        let nearCorner = Infinity, nearFar = Infinity, topMin = Infinity, topMax = -Infinity;
+        for (let k = 0; k <= 1200; k++) {
+          const p = path.getPointAtLength(L * k / 1200);
+          if (Math.abs(p.y - corner.y) < 30) nearCorner = Math.min(nearCorner, Math.hypot(p.x - corner.x, p.y - corner.y));
+          if (Math.abs(p.y - far.y) < 30) nearFar = Math.min(nearFar, Math.hypot(p.x - far.x, p.y - far.y));
+          if (p.y < 0.6) { topMin = Math.min(topMin, p.x); topMax = Math.max(topMax, p.x); }
+        }
+        return { side, w: +w.toFixed(2), h: +h.toFixed(2), attachX: +longest[0].toFixed(2),
+                 attachLen: +Math.abs(longest[2] - longest[1]).toFixed(2),
+                 nearCorner: +nearCorner.toFixed(2), nearFar: +nearFar.toFixed(2),
+                 topMin: +topMin.toFixed(2), topMax: +topMax.toFixed(2) };
+      }"""
+    g = pg.evaluate(GEOM)
+    # 贴边侧：一条贯穿整高的直线贴屏幕边（被上下两端的反向圆角各吃掉 14px）
+    t("贴边侧（右）：直线落在窗口右边缘 x=w 上", g["side"] == "right" and abs(g["attachX"] - g["w"]) <= 1, str(g))
+    t("贴边侧直线长度 = 整高 − 上下各 14px（两端让给反向圆角）",
+      abs(g["attachLen"] - (g["h"] - 28)) <= 1.5, str(g))
+    # 反向圆角：屏幕边缘上那个角，最近的边界点在 14px 外 —— 材料被以该角为圆心、半径 14 的圆挖掉
+    t("上端是反向圆角：边界贴着「屏幕边上的角」画半径 14 的圆（≈14，正常圆角只有 ≈6.2）",
+      abs(g["nearCorner"] - 14) <= 1.5, str(g["nearCorner"]))
+    # 远端：正常的大圆角 R=15，弧心在形状里侧 → 离角 ≈ 15√2−15 = 6.2
+    t("远端是正常圆角：离角 ≈ 6.2（R=15 的凸弧）", abs(g["nearFar"] - 6.21) <= 1.2, str(g["nearFar"]))
+    t("上边缘不到屏幕边：右贴时顶边止于 x = w−14 处", abs(g["topMax"] - (g["w"] - 14)) <= 1.5, str(g))
+    pg.evaluate("() => { const s = window.__state; s.config.dockSide = 'left'; window.__cb(s); }")
+    pg.wait_for_timeout(200)
+    gl = pg.evaluate(GEOM)
+    t("换到左贴：body 换 class + 贴边侧直线跑到 x=0", gl["side"] == "left" and abs(gl["attachX"]) <= 1
+      and pg.evaluate("document.body.classList.contains('dock-left')"), str(gl))
+    t("换到左贴：反向圆角挪到左边（屏幕边上的角 (0,0) 附近 ≈14）", abs(gl["nearCorner"] - 14) <= 1.5, str(gl))
+    t("换到左贴：远端仍是正常圆角（≈6.2）", abs(gl["nearFar"] - 6.21) <= 1.2, str(gl))
+    t("左贴时顶边从 x = 14 开始（上下两端沿屏幕边缘各留一段反向圆角）",
+      abs(gl["topMin"] - 14) <= 1.5, str(gl))
+    pg.screenshot(path="/tmp/r_dock.png")
+    # 深浅两套配色：底环与造型描边各有一套，跟着主题走
+    dark_pal = pg.evaluate("""() => [
+      getComputedStyle(document.querySelector('#dock .dc-track')).stroke,
+      getComputedStyle(document.querySelector('#dock .dock-edge path')).stroke]""")
+    pg.evaluate("() => { const s = window.__state; s.theme = 'light'; window.__cb(s); }")
+    pg.wait_for_timeout(200)
+    light_pal = pg.evaluate("""() => [
+      getComputedStyle(document.querySelector('#dock .dc-track')).stroke,
+      getComputedStyle(document.querySelector('#dock .dock-edge path')).stroke]""")
+    t("浅色主题换另一套底环 / 描边（深浅两套都在）",
+      dark_pal != light_pal and all(a != b for a, b in zip(dark_pal, light_pal)),
+      f"{dark_pal} vs {light_pal}")
+    pg.evaluate("() => { const s = window.__state; s.theme = 'dark'; window.__cb(s); }")
+    pg.wait_for_timeout(150)
+
+    print("贴边模式（dock）· 点圆圈 = 切页签 + 切账户 + 展开面板:")
+    pg.evaluate("() => { window.__view = null; window.__tab = null; window.__activated = null; }")
+    pg.locator("#dock .dc[data-acc-id='a2']").click()
+    pg.wait_for_timeout(250)
+    t("setTab('glm')", pg.evaluate("window.__tab") == "glm", str(pg.evaluate("window.__tab")))
+    t("accActivate({provider:'glm', id:'a2'})",
+      pg.evaluate("JSON.stringify(window.__activated)") == '{"provider":"glm","id":"a2"}',
+      str(pg.evaluate("window.__activated")))
+    t("setView('panel')", pg.evaluate("window.__view") == "panel", str(pg.evaluate("window.__view")))
+    t("乐观先行：body 已切到 view-panel", pg.evaluate("document.body.classList.contains('view-panel')"))
+    t("展开后就是这家 + 这个账户", pg.evaluate("window.__state.providers.glm.activeId") == "a2"
+      and pg.evaluate("window.__state.config.panelTab") == "glm")
+    t("面板数字跟着切到备用号 78", pg.text_content("#panel .pane-glm .pv5") == "78")
+    # 点当前账户那圈：不该再发一次 accActivate（切自己没意义）
+    pg.evaluate("() => { const s = window.__state; s.view = 'dock'; window.__activated = null; window.__cb(s); }")
+    pg.wait_for_timeout(150)
+    pg.locator("#dock .dc[data-acc-id='a2']").click()
+    pg.wait_for_timeout(200)
+    t("点当前账户那圈不重复发 accActivate", pg.evaluate("window.__activated") is None,
+      str(pg.evaluate("window.__activated")))
+    # 整条列可拖：从圆圈上按住拖动 = 移动窗口，不该被当成「点圆圈」
+    pg.evaluate("() => { const s = window.__state; s.view = 'dock'; window.__view = null; window.__activated = null;"
+                " window.__dragMove = 0; window.__dragEnd = 0; window.__cb(s); }")
+    pg.wait_for_timeout(150)
+    box = pg.locator("#dock .dc[data-acc-id='a2']").bounding_box()
+    pg.mouse.move(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
+    pg.mouse.down()
+    pg.mouse.move(box["x"] + 60, box["y"] + 8, steps=6)
+    pg.wait_for_timeout(60)
+    pg.mouse.up()
+    pg.wait_for_timeout(200)
+    t("从圆圈上拖动 = 拖窗口（有心跳 + dragEnd）",
+      pg.evaluate("window.__dragMove") >= 1 and pg.evaluate("window.__dragEnd") == 1,
+      str(pg.evaluate("[window.__dragMove, window.__dragEnd]")))
+    t("拖动没顺带切账户 / 展开面板", pg.evaluate("window.__activated") is None
+      and pg.evaluate("window.__view") is None, str(pg.evaluate("[window.__activated, window.__view]")))
+    ctx_before = pg.evaluate("window.__ctx")      # 胶囊那一节已经右键过一次，这里看增量
+    pg.locator("#dock").click(button="right", position={"x": 32, "y": 8})
+    pg.wait_for_timeout(150)
+    t("右键贴边列唤起应用菜单", pg.evaluate("window.__ctx") == ctx_before + 1,
+      f"{ctx_before} → {pg.evaluate('window.__ctx')}")
+
+    print("贴边模式（dock）· 收起目标 / 缩放:")
+    pg.evaluate("() => { const s = window.__state; s.view = 'panel'; window.__view = null; window.__cb(s); }")
+    pg.wait_for_timeout(150)
+    pg.keyboard.press("Escape")
+    pg.wait_for_timeout(150)
+    t("面板里按 Esc：配了贴边 → setView('dock')", pg.evaluate("window.__view") == "dock", str(pg.evaluate("window.__view")))
+    t("乐观先行：body 切回 view-dock", pg.evaluate("document.body.classList.contains('view-dock')"))
+    pg.evaluate("() => { const s = window.__state; s.view = 'panel'; s.config.dockSide = null; window.__view = null; window.__cb(s); }")
+    pg.wait_for_timeout(150)
+    pg.keyboard.press("Escape")
+    pg.wait_for_timeout(150)
+    t("没配贴边 → Esc 仍回胶囊 setView('capsule')", pg.evaluate("window.__view") == "capsule", str(pg.evaluate("window.__view")))
+    # 点面板空白同样走 collapsedView
+    pg.evaluate("() => { const s = window.__state; s.config.dockSide = 'right'; s.view = 'panel'; window.__view = null; window.__cb(s); }")
+    pg.wait_for_timeout(150)
+    pg.click("#panel .pane-glm .sub")
+    pg.wait_for_timeout(150)
+    t("点面板空白：配了贴边 → 回贴边列", pg.evaluate("window.__view") == "dock", str(pg.evaluate("window.__view")))
+    # 贴边列下 Ctrl+滚轮 / Ctrl+0 与胶囊一样不缩放
+    pg.evaluate("() => { const s = window.__state; s.view = 'dock'; s.config.zoom = 1.2; window.__zoom = null; window.__cb(s); }")
+    pg.wait_for_timeout(150)
+    box = pg.locator("#dock .dc").first.bounding_box()
+    pg.mouse.move(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
+    pg.keyboard.down("Control")
+    pg.mouse.wheel(0, -100)
+    pg.keyboard.up("Control")
+    pg.keyboard.press("Control+0")
+    pg.wait_for_timeout(150)
+    t("贴边列下 Ctrl+滚轮 / Ctrl+0 都不缩放（与胶囊一致）",
+      pg.evaluate("window.__zoom") is None and pg.evaluate("window.__state.config.zoom") == 1.2,
+      str(pg.evaluate("window.__zoom")))
+
+    print("贴边模式（dock）· 全停用时的空态圆圈:")
+    pg.evaluate("""() => {
+      const s = window.__state;
+      window.__dockProvBackup = JSON.parse(JSON.stringify(s.providers));
+      window.__dockAccBackup = JSON.parse(JSON.stringify(s.config.accounts));
+      s.providers = {};                          // 主进程口径：整家停用 == 这家不出场 → providers 为空
+      s.config.accounts.forEach(a => { a.enabled = false; });
+      s.view = 'dock'; s.config.dockSide = 'right'; window.__view = null;
+      window.__cb(s);
+    }""")
+    settle(pg)
+    t("providers 全空时列里出现 .dc-empty（不再是一条空玻璃条）",
+      pg.locator("#dock .dc-empty").count() == 1 and pg.locator("#dock .dc").count() == 0,
+      str(pg.evaluate("[document.querySelectorAll('#dock .dc-empty').length, document.querySelectorAll('#dock .dc').length]")))
+    t("空态是虚线圆 + 中间 ⚙", pg.evaluate("""() => {
+        const el = document.querySelector('#dock .dc-empty');
+        return !!el && getComputedStyle(el).borderTopStyle === 'dashed' && el.textContent.includes('⚙');
+      }"""))
+    t("空态圆 40px（与圆圈同一套尺寸）", pg.evaluate("""() => {
+        const el = document.querySelector('#dock .dc-empty');
+        if (!el) return false;
+        const r = el.getBoundingClientRect();
+        return Math.abs(r.width - 40) < 0.6 && Math.abs(r.height - 40) < 0.6;
+      }"""))
+    empty_title = pg.evaluate("() => (document.querySelector('#dock .dc-empty') || {}).title || ''")
+    t("空态 title 提示点它去设置", empty_title == "还没有可显示的账户 · 点击去设置", str(empty_title))
+    dark_border = pg.evaluate("""() => { const el = document.querySelector('#dock .dc-empty');
+        return el ? getComputedStyle(el).borderTopColor : ''; }""")
+    pg.evaluate("() => { const s = window.__state; s.theme = 'light'; window.__cb(s); }")
+    pg.wait_for_timeout(150)
+    light_border = pg.evaluate("""() => { const el = document.querySelector('#dock .dc-empty');
+        return el ? getComputedStyle(el).borderTopColor : ''; }""")
+    t("空态配色跟主题走（浅深两套）", light_border and light_border != dark_border, f"{dark_border} vs {light_border}")
+    pg.evaluate("() => { const s = window.__state; s.theme = 'dark'; window.__cb(s); }")
+    pg.wait_for_timeout(150)
+    pg.screenshot(path="/tmp/r_dock_empty.png")
+    if pg.locator("#dock .dc-empty").count():
+        pg.locator("#dock .dc-empty").click()
+    pg.wait_for_timeout(200)
+    t("点空态圆圈走到 setView('settings')", pg.evaluate("window.__view") == "settings",
+      str(pg.evaluate("window.__view")))
+    pg.evaluate("""() => {
+      const s = window.__state;
+      s.providers = JSON.parse(JSON.stringify(window.__dockProvBackup));
+      s.config.accounts = JSON.parse(JSON.stringify(window.__dockAccBackup));
+      s.view = 'dock'; window.__view = null;
+      window.__cb(s);
+    }""")
+    settle(pg)
+    t("重新启用后 .dc-empty 消失、圆圈回来", pg.locator("#dock .dc-empty").count() == 0
+      and pg.locator("#dock .dc").count() == 3,
+      str(pg.evaluate("[document.querySelectorAll('#dock .dc-empty').length, document.querySelectorAll('#dock .dc').length]")))
 
     b.close()
 

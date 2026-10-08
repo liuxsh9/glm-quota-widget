@@ -104,6 +104,15 @@ PROV_MANY = {"glm": {"name": "GLM Coding Plan", "tab": "GLM", "tier": "high",
                           "accounts": [DS_A1, DS_A2], "activeId": "d1"}}
 
 
+# 贴边列（dock）截图用：三个圆圈 —— GLM 主号 41% / GLM 备用号 78% / DeepSeek 今日 ¥12.4（预算 ¥20 → 62%）
+_DOCK_DS_DATA = json.loads(json.dumps(DS_DATA))
+_DOCK_DS_DATA["summary"]["today"] = 12.4
+DOCK_DS_A1 = dict(DS_A1, data=_DOCK_DS_DATA, dock={"metric": "today", "budget": 20})
+PROV_DOCK = {"glm": dict(PROV_MID["glm"], accounts=[dict(GLM_A1, dock={"metric": "five"}),
+                                                    dict(GLM_A2, dock={"metric": "five"})]),
+             "deepseek": dict(PROV_MID["deepseek"], accounts=[DOCK_DS_A1])}
+
+
 def state(view="capsule", theme="dark", tab="glm", providers=None, worst="mid", layout="switch"):
     return {"view": view, "hasAcrylic": False, "theme": theme, "platform": "win32",
             "worstTier": worst,
@@ -139,6 +148,29 @@ def fit_cap(pg, frame_name):
     pg.wait_for_timeout(150)
 
 
+def dock_state(theme, side):
+    """贴边列：窗口就是内容本身（不留 PAD），贴边侧由 dockSide 决定"""
+    s = state("dock", theme, providers=PROV_DOCK)
+    s["config"] = dict(s["config"], dockSide=side)
+    return s
+
+
+def fit_dock(pg, frame_name, stage_w, stage_h, side):
+    """贴边列也是 max-content：iframe 按实测尺寸改，并**贴到舞台对应那条边**（模拟屏幕边缘），
+    这样截图里才看得出反向圆角是贴着画面边缘长出来的"""
+    fr = next(f for f in pg.frames if f.name == frame_name)
+    fr.wait_for_function("window.__dockSize")
+    sz = fr.evaluate("window.__dockSize")
+    fr.evaluate("""([sz, side, sw, sh]) => {
+        const el = parent.document.querySelector(`iframe[name="${window.name}"]`);
+        el.style.width = sz.w + 'px';
+        el.style.height = sz.h + 'px';
+        el.style.left = (side === 'right' ? sw - sz.w : 0) + 'px';
+        el.style.top = ((sh - sz.h) / 2) + 'px';
+      }""", [sz, side, stage_w, stage_h])
+    pg.wait_for_timeout(150)
+
+
 INIT = """
 const FAKE_NOW = %d;
 Date.now = () => FAKE_NOW;                 // 钉住时钟：峰谷徽标与倒计时都可复现
@@ -150,6 +182,7 @@ window.glm = {
   accAdd: async () => window.__state, accUpdate: async () => window.__state,
   accRemove: async () => window.__state, accActivate: async () => window.__state, accMenu: async () => window.__state,
   capsuleSize: (s) => { window.__capSize = s; },   // 实测尺寸：舞台按它调 iframe 大小
+  dockSize: (s) => { window.__dockSize = s; },     // 同上（贴边列）
   setView: () => {}, setTab: () => {}, setZoom: () => {}, dragStart: () => {}, dragMove: () => {},
   dragEnd: () => {}, ctxMenu: () => {}, trayIcon: () => {}, openExternal: () => {}, quit: () => {},
   onState: (cb) => { window.__cb = cb; }, ready: () => {},
@@ -163,6 +196,14 @@ BG = {
     "light": ("radial-gradient(120% 90% at 12% 0%, #dfe6f3 0%, transparent 60%),"
               "radial-gradient(100% 80% at 88% 100%, #d6e6ea 0%, transparent 55%),"
               "linear-gradient(160deg,#f2f4f8 0%,#e4e7ee 100%)"),
+    # 贴边列的截图要一段假的「桌面」（纯渐变）当背景：窗口是透明的，贴边侧上下两端的
+    # 反向圆角在背景上才看得出来是贴着画面边缘长出来的
+    "desk-dark": ("radial-gradient(85% 70% at 76% 18%, #2c3a63 0%, transparent 62%),"
+                  "radial-gradient(70% 60% at 10% 92%, #3a2b4e 0%, transparent 60%),"
+                  "linear-gradient(155deg,#14161d 0%,#0b0d12 100%)"),
+    "desk-light": ("radial-gradient(85% 70% at 24% 16%, #cfe0f5 0%, transparent 62%),"
+                   "radial-gradient(70% 60% at 90% 88%, #f0dbe2 0%, transparent 60%),"
+                   "linear-gradient(155deg,#eef1f6 0%,#dbe1ea 100%)"),
 }
 STAGE_HTML = """<!doctype html><meta charset="utf-8">
 <style>
@@ -256,6 +297,22 @@ def main():
             fr.wait_for_timeout(250)
             pg.screenshot(path=str(OUT / "settings-general.png"))
             ctx.close()
+
+            # ④ 贴边列（dock）：深色贴右 / 浅色贴左，各配一段假的桌面背景。
+            #    iframe 贴到舞台对应那条边 —— 贴边侧的反向圆角要贴着画面边缘才看得出来
+            DW, DH = 300, 300
+            for tag, theme, side in (("dock-dark-right", "dark", "right"),
+                                     ("dock-light-left", "light", "left")):
+                build_stage([("dock", 0, 0, 90, 200)], DW, DH, bg="desk-" + theme)
+                ctx = b.new_context(viewport={"width": DW, "height": DH}, device_scale_factor=2)
+                setup(ctx)
+                pg = ctx.new_page()
+                pg.goto(f"http://127.0.0.1:{port}/_shots_stage.html")
+                pg.wait_for_timeout(600)
+                put(pg, "dock", dock_state(theme, side))
+                fit_dock(pg, "dock", DW, DH, side)
+                pg.screenshot(path=str(OUT / f"{tag}.png"))
+                ctx.close()
             b.close()
     finally:
         srv.shutdown()

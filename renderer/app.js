@@ -20,6 +20,8 @@ if (!window.glm) {
 const api = window.glm;
 const F = window.GLMFMT;
 const PROV = window.GLMPROV;
+const DOCKM = window.GLMDOCK;     // 百分比口径 + 圆环配色（lib/dock-metric.js，主进程共用同一份）
+const LOGOS = window.GLMLOGOS;    // 三家 logo 的内联 SVG（renderer/logos.js）
 const { esc, hhmm } = window.GLMPUI;
 const $ = (s) => document.querySelector(s);
 
@@ -128,6 +130,7 @@ function applyState(s) {
     'view-' + s.view,
     c.hasAcrylic || s.hasAcrylic ? 'acrylic' : '',
     s.theme === 'light' ? 'theme-light' : '',
+    c.dockSide === 'left' ? 'dock-left' : c.dockSide === 'right' ? 'dock-right' : '',
     providerIds(s).length ? '' : 'no-providers',
     tabAcc && tabAcc.status === 'expired' ? 'bn-expired'
       : (tabAcc && (tabAcc.status === 'error' || tabAcc.status === 'ratelimit')) ? 'bn-retry' : 'bn-none',
@@ -137,6 +140,7 @@ function applyState(s) {
   renderTabs(s);
   renderAccRow(s);
   renderCapsule(s);
+  renderDock(s);
   renderPanes(s);
 
   // 面板头部：时间/状态跟随当前页签的当前账户
@@ -317,6 +321,152 @@ function syncCapsuleSize() {
   api.capsuleSize({ w, h });
 }
 
+/* ---------- 贴边列（dock）：每个启用的账户一个圆圈 ----------
+   圆圈 = 圆环（百分比弧 + 底环）+ 中心 logo + 环下百分比数字。口径（取哪个百分比）与环色
+   全部来自 lib/dock-metric.js（GLMDOCK），渲染层不自己算百分比、也不自己挑颜色。
+   账户集合没变时**不重建**列：只更新环与数字 —— 否则状态每次推送（每秒都可能有）圆圈都会闪。 */
+const DOCK_R = 18.25;                 // 圆环半径：直径 40 − 环宽 3.5
+const DOCK_C = 2 * Math.PI * DOCK_R;  // 圆周长：进度弧的 dasharray
+const DOCK_FILLET = 14;               // 贴边侧上下两端的反向圆角半径
+const DOCK_CORNER = 15;               // 远离屏幕一侧的正常圆角（与 .glass 的 15px 一致）
+
+/** 这一列画哪些圆圈：provider 注册表序 → 每家的账户原序 → 只留启用的 */
+function dockCells(s) {
+  const out = [];
+  for (const pid of providerIds(s)) {
+    const prov = s.providers[pid];
+    if (!prov) continue;
+    for (const acc of prov.accounts) {
+      if (acc.enabled === false) continue;    // 停用的账户不出场
+      out.push({ pid, acc });
+    }
+  }
+  return out;
+}
+
+/** 圆圈的 tooltip：账户名 · 口径（悬停详情是后续单，这里先用原生 title 兜底） */
+function dockTitle(pid, acc) {
+  const norm = DOCKM.normalize(pid, acc.dock);
+  const list = Object.prototype.hasOwnProperty.call(DOCKM.METRICS, pid) ? DOCKM.METRICS[pid] : null;
+  const item = (norm.metric && list) ? list.find((m) => m.key === norm.metric) : null;
+  return acc.name + (item ? ' · ' + item.label : '');
+}
+
+function dockCellHtml(pid, acc) {
+  return `<div class="dc" data-pid="${esc(pid)}" data-acc-id="${esc(acc.id)}">`
+    + `<div class="dc-top">`
+    + `<svg class="dc-ring" viewBox="0 0 40 40" aria-hidden="true">`
+    + `<circle class="dc-track" cx="20" cy="20" r="${DOCK_R}"></circle>`
+    + `<circle class="dc-arc" cx="20" cy="20" r="${DOCK_R}"`
+    + ` stroke-dasharray="${DOCK_C.toFixed(2)}" stroke-dashoffset="${DOCK_C.toFixed(2)}"></circle>`
+    + `</svg>`
+    + `<span class="dc-logo" aria-hidden="true">${(LOGOS && LOGOS[pid]) || ''}</span>`
+    + `<i class="dc-badge" title="凭据失效 / 更新失败">!</i>`
+    + `</div>`
+    + `<b class="dc-pct">–</b>`
+    + `</div>`;
+}
+
+/** 只动环与数字（列结构没变时逐个更新，不重建节点） */
+function updateDockCell(node, pid, acc) {
+  const p = DOCKM.percentOf(pid, acc.data, acc.dock);
+  const warn = acc.status === 'expired' || acc.status === 'error';
+  const arc = node.querySelector('.dc-arc');
+  if (p) {
+    arc.setAttribute('stroke', DOCKM.ringColor(p.pct));   // 弧色：连续渐变（0–100 夹过的比例）
+    arc.setAttribute('stroke-dashoffset', (DOCK_C * (1 - p.pct / 100)).toFixed(2));
+  } else {
+    arc.removeAttribute('stroke');                        // 取不到数：不画弧，只留底环
+    arc.setAttribute('stroke-dashoffset', DOCK_C.toFixed(2));
+  }
+  node.classList.toggle('dc-none', !p);
+  node.classList.toggle('dc-warn', warn);                 // 过期 / 出错：灰环 + 角标
+  // 数字讲真话：用未夹的 raw —— DeepSeek 超预算时是 150% 而不是 100%
+  node.querySelector('.dc-pct').textContent = p ? Math.round(p.raw) + '%' : '–';
+  node.title = dockTitle(pid, acc);
+}
+
+/** 全停用 / 还没配账户时的空态：一个安静的虚线圆 + ⚙。贴边保留、不清配置 —— 重加账户时
+ *  不必再贴一次边；点它走「点空白 → 展开设置」那条现成的路（expandTarget 无 provider 时回 settings）。 */
+function dockEmptyHtml() {
+  return `<div class="dc-empty" title="还没有可显示的账户 · 点击去设置">`
+    + `<span class="dc-gear" aria-hidden="true">⚙</span>`
+    + `</div>`;
+}
+
+function renderDock(s) {
+  const host = $('#dock');
+  if (!host) return;
+  const cells = dockCells(s);
+  // 空态也占一档结构指纹：'empty'（真实指纹是 'pid:accId' 的逗号列表，撞不上）
+  const sig = cells.length ? cells.map(({ pid, acc }) => pid + ':' + acc.id).join(',') : 'empty';
+  if (host.dataset.sig !== sig) {
+    host.dataset.sig = sig;
+    host.querySelectorAll('.dc, .dc-empty').forEach((el) => el.remove());
+    host.insertAdjacentHTML('beforeend',
+      cells.length ? cells.map(({ pid, acc }) => dockCellHtml(pid, acc)).join('') : dockEmptyHtml());
+  }
+  const nodes = host.querySelectorAll('.dc');
+  cells.forEach(({ pid, acc }, i) => { if (nodes[i]) updateDockCell(nodes[i], pid, acc); });
+  applyDockShape();
+  syncDockSize();
+}
+
+/* ---------- 贴边造型 ----------
+   贴边侧：一条直角直线贴满屏幕边（整高），上下两端各一段反向圆角（凹弧）沿边缘向下 / 向上
+   延伸，然后把身体的顶边 / 底边张开到全宽 —— 像是从屏幕边缘长出来的；远离屏幕的一侧是
+   正常的大圆角。同一个 d 既当裁剪（clip-path，让 .glass 的配色 / 噪点正好铺满这个形状）
+   又当描边（.dock-edge path），所以背景与描边完全同形。左右镜像。 */
+function dockPathData(w, h, side) {
+  const r = DOCK_FILLET, R = DOCK_CORNER, n = (v) => Math.round(v * 100) / 100;
+  if (side === 'left') {          // 贴左边：屏幕边是 x=0，(0,0) 就是屏幕边缘上的上角
+    return `M 0 ${n(r)} A ${r} ${r} 0 0 0 ${n(r)} 0`
+      + ` H ${n(w - R)} A ${R} ${R} 0 0 1 ${n(w)} ${n(R)}`
+      + ` V ${n(h - R)} A ${R} ${R} 0 0 1 ${n(w - R)} ${n(h)}`
+      + ` H ${n(r)} A ${r} ${r} 0 0 0 0 ${n(h - r)}`
+      + ` V ${n(r)} Z`;
+  }
+  return `M ${n(R)} 0 H ${n(w - r)} A ${r} ${r} 0 0 0 ${n(w)} ${n(r)}`   // 贴右边：屏幕边是 x=w
+    + ` V ${n(h - r)} A ${r} ${r} 0 0 0 ${n(w - r)} ${n(h)}`
+    + ` H ${n(R)} A ${R} ${R} 0 0 1 0 ${n(h - R)}`
+    + ` V ${n(R)} A ${R} ${R} 0 0 1 ${n(R)} 0 Z`;
+}
+
+/** 把当前实测尺寸 / 贴边侧落到造型上（尺寸或侧别没变就不重复写 DOM） */
+let lastDockShape = '';
+function applyDockShape() {
+  const el = $('#dock');
+  if (!el) return;
+  const rect = el.getBoundingClientRect();
+  if (!rect.width || !rect.height) return;      // 不在贴边视图（display:none）时量不到
+  const side = (st && st.config && st.config.dockSide) === 'left' ? 'left' : 'right';
+  const w = Math.round(rect.width), h = Math.round(rect.height);
+  const key = `${side}:${w}x${h}`;
+  if (key === lastDockShape) return;
+  lastDockShape = key;
+  const d = dockPathData(w, h, side);
+  el.style.clipPath = `path("${d}")`;
+  const path = el.querySelector('.dock-edge path');
+  if (path) path.setAttribute('d', d);
+}
+
+/* ---------- 贴边列尺寸上报 ----------
+   同胶囊：卡片是 max-content，窗口尺寸以实测为准。上下反向圆角的延伸区就在这个盒子里，
+   所以量出的高度天然含它。api.dockSize 还没合进来（主进程那侧另一张单）时只记不报。 */
+let lastDockSize = '';
+function syncDockSize() {
+  const el = $('#dock');
+  if (!el) return;
+  const r = el.getBoundingClientRect();
+  if (!r.width || !r.height) return;
+  const w = Math.ceil(r.width), h = Math.ceil(r.height);
+  const sig = w + 'x' + h;
+  if (sig === lastDockSize) return;
+  lastDockSize = sig;
+  window.__dockSize = { w, h };        // 供测试读取（仿照 window.__capSize）
+  if (api.dockSize) api.dockSize({ w, h });
+}
+
 /* ---------- 面板尺寸上报 ----------
    面板高度不再写死：渲染层量出「页头上两个页签里最高的那个 + 账户 chips 行 + 内边距」，
    上报给主进程当窗口高。写死的高度在换字体/换系统时会差几个像素 —— 不是把 chips 行裁掉，
@@ -341,6 +491,8 @@ function onWindowResize() {
   sizeReflow = requestAnimationFrame(() => {
     sizeReflow = 0;
     syncCapsuleSize();
+    applyDockShape();
+    syncDockSize();
     syncPanelSize(true);
     verifyPanelFit();
   });
@@ -622,6 +774,7 @@ function makeDraggable(elRoot, onTap) {
     if (drag) return;
     drag = { moved: false };
     pending.gx = e.screenX; pending.gy = e.screenY; pending.onTap = onTap;
+    pending.target = e.target;   // 按下的位置：贴边列要按圆圈分派（点圆圈 = 切账户 + 展开）
     try { elRoot.setPointerCapture(e.pointerId); } catch { }
     e.preventDefault();
     // 把锚点先交给主进程：光标滑出窗口矩形后就收不到 pointermove 了，靠主进程自己采样
@@ -645,17 +798,43 @@ function onDragFinish() {
   dragListeners(false);
   api.dragEnd();
   if (!moved && pending.onTap) {
-    try { pending.onTap(); } catch (err) { console.error('GLM_APP tap handler', err); }
+    try { pending.onTap(pending.target); } catch (err) { console.error('GLM_APP tap handler', err); }
   }
+}
+
+/** 收起态是哪个视图：配了贴边（dockSide 非空）就回贴边列，否则回胶囊。
+ *  面板 / 设置收起时都走它 —— 本地乐观切换与发给主进程的是同一个值。 */
+function collapsedView() {
+  return (st && st.config && st.config.dockSide) ? 'dock' : 'capsule';
+}
+
+/** 贴边列与胶囊一样保持原始大小：缩放（Ctrl+滚轮 / Ctrl+0）在这两个视图下不生效 */
+function noZoom() {
+  return !st || st.view === 'capsule' || st.view === 'dock';
 }
 
 /** 乐观先行切换视图：不等主进程回包，点击瞬间内容就变（主进程广播稍后对齐） */
 function setViewLocal(v) {
-  document.body.classList.remove('view-capsule', 'view-panel', 'view-settings');
+  document.body.classList.remove('view-capsule', 'view-panel', 'view-settings', 'view-dock');
   document.body.classList.add('view-' + v);
   // 换视图前先把实测尺寸递过去：主进程 setView 时就能按正确的宽/高重排，省掉可见的尺寸跳变
   if (v === 'capsule') syncCapsuleSize();
   if (v === 'panel') syncPanelSize();
+  if (v === 'dock') { applyDockShape(); syncDockSize(); }
+}
+
+/** 点贴边列上的圆圈：切到那家的页签 + （不是当前账户时）设为当前账户 + 展开面板 */
+function tapDockCell(cell) {
+  if (!st || !cell || !cell.dataset) return;
+  const pid = cell.dataset.pid, id = cell.dataset.accId;
+  api.setTab(pid);
+  if (st.config) st.config.panelTab = pid;     // 乐观先行：面板一开就是这家
+  const prov = st.providers[pid];
+  if (prov && prov.activeId !== id) {
+    api.accActivate({ provider: pid, id }).then((ns) => { if (ns && ns.providers) applyState(ns); });
+  }
+  const v = expandTarget();
+  setViewLocal(v); api.setView(v);
 }
 
 function expandTarget() {
@@ -684,20 +863,27 @@ function tickPanes() {
 }
 
 function bind() {
-  // 三个视图都可拖动；点击（非控件处）：胶囊=展开，面板/设置=收起
+  // 四个视图都可拖动；点击（非控件处）：胶囊=展开，面板/设置=收起，贴边列=点圆圈切账户 / 点空白展开
   makeDraggable($('#capsule'), () => { const v = expandTarget(); setViewLocal(v); api.setView(v); });
-  makeDraggable($('#panel'), () => { setViewLocal('capsule'); api.setView('capsule'); });
-  makeDraggable($('#settings'), () => { setViewLocal('capsule'); api.setView('capsule'); });
+  makeDraggable($('#panel'), () => { const v = collapsedView(); setViewLocal(v); api.setView(v); });
+  makeDraggable($('#settings'), () => { const v = collapsedView(); setViewLocal(v); api.setView(v); });
+  makeDraggable($('#dock'), (t) => {
+    const cell = (t && t.closest) ? t.closest('.dc') : null;   // 拖整条列都能拖；点哪个圆圈就开哪个账户
+    if (cell) { tapDockCell(cell); return; }
+    const v = expandTarget(); setViewLocal(v); api.setView(v);
+  });
 
   $('#capsule').addEventListener('contextmenu', (e) => { e.preventDefault(); api.ctxMenu(); });
   $('#capsule').addEventListener('dblclick', (e) => e.preventDefault());
+  $('#dock').addEventListener('contextmenu', (e) => { e.preventDefault(); api.ctxMenu(); });
 
   $('#refBtn2').addEventListener('click', (e) => { e.stopPropagation(); refresh(); });
   $('#gearBtn').addEventListener('click', (e) => { e.stopPropagation(); setViewLocal('settings'); api.setView('settings'); });
   $('#fixBtn').addEventListener('click', () => { setViewLocal('settings'); api.setView('settings'); });
   $('#retryBtn').addEventListener('click', refresh);
   $('#backBtn').addEventListener('click', () => {
-    const v = st && providerIds(st).length ? 'panel' : 'capsule';
+    // 没有账户可展示时回到收起态（配了贴边就回贴边列，否则回胶囊）
+    const v = st && providerIds(st).length ? 'panel' : collapsedView();
     setViewLocal(v); api.setView(v);
   });
   $('#saveBtn').addEventListener('click', saveSettings);
@@ -706,15 +892,18 @@ function bind() {
   bindAutoSave();
 
   window.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape' && st && st.view !== 'capsule') { setViewLocal('capsule'); api.setView('capsule'); }
-    if (e.ctrlKey && (e.key === '0' || e.code === 'Digit0') && st && st.view !== 'capsule') {
+    // Esc 收起：面板 / 设置 → 收起态（贴边配了就回贴边列，否则回胶囊）；已是收起态就不空转
+    if (e.key === 'Escape' && st && st.view !== 'capsule' && st.view !== 'dock') {
+      const v = collapsedView(); setViewLocal(v); api.setView(v);
+    }
+    if (e.ctrlKey && (e.key === '0' || e.code === 'Digit0') && !noZoom()) {
       e.preventDefault();
       if ((st.config.zoom || 1) !== 1) api.setZoom(1);
     }
   });
-  // Ctrl+滚轮：展开态等比缩放（胶囊保持紧凑不缩放）
+  // Ctrl+滚轮：展开态等比缩放（胶囊 / 贴边列保持原始大小不缩放）
   window.addEventListener('wheel', (e) => {
-    if (!e.ctrlKey || !st || st.view === 'capsule') return;
+    if (!e.ctrlKey || noZoom()) return;
     e.preventDefault();
     const cur = st.config.zoom || 1;
     const next = Math.min(1.6, Math.max(0.8, Math.round((cur + (e.deltaY < 0 ? 0.05 : -0.05)) * 20) / 20));

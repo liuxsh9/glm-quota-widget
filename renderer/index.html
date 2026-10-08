@@ -13,6 +13,12 @@
   <div class="hint hint-all"><span class="go">◈ 点击设置 Token ›</span></div>
 </section>
 
+<!-- E' · 贴边列（dock）：每个启用的账户一个圆圈（圆环 + logo + 百分比），列由渲染层生成。
+     造型（贴边侧的反向圆角）由渲染层按实测尺寸写 clip-path + 这段 <svg> 描边 -->
+<section id="dock" class="shell glass">
+  <svg class="dock-edge" aria-hidden="true"><path d=""></path></svg>
+</section>
+
 <!-- B · 展开面板：页签按 provider 生成，视图由 panes.js 的工厂渲染 -->
 <section id="panel" class="shell glass">
   <div class="phead">
@@ -80,6 +86,8 @@
 
 <script src="../lib/format.js"></script>
 <script src="../lib/providers/meta.js"></script>
+<script src="../lib/dock-metric.js"></script>
+<script src="logos.js"></script>
 <script src="panes.js"></script>
 <script src="settings.js"></script>
 <script src="app.js"></script>

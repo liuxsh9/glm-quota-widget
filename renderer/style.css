@@ -218,6 +218,70 @@ body.theme-light #capsule .acc-chip:hover { background: rgba(23, 28, 45, .16); }
 body.no-providers #capsule .hint-all { display: flex; }
 #capsule .cap-acct.st-loading { opacity: .88; }
 
+/* ============ 贴边列（dock）：每个启用的账户一个圆圈 ============
+   窗口就是内容本身（贴边时主进程不留 PAD），所以这一视图下 body 不留阴影走廊。
+   造型（贴边侧的反向圆角）由渲染层按实测尺寸写 clip-path（见 app.js 的 dockPathData）：
+   同一个 path 让 .glass 的配色 / 噪点正好铺满这个形状，描边则交给 .dock-edge 的 path ——
+   clip 会把描边的外半边裁掉，正好剩 1px，直线段与凹弧同粗。 */
+body.view-dock { padding: 0; }
+body.view-dock #dock { display: flex; }
+
+#dock {
+  position: relative; flex-direction: column; align-items: center;
+  gap: 10px; padding: 16px 12px;
+  width: max-content; height: max-content;   /* 尺寸由内容定，渲染层实测后上报 */
+  border: 0; border-radius: 0;               /* 形状全归 clip-path，避免和 border-radius 打架 */
+  --ring-track: rgba(255, 255, 255, .14);    /* 底环：半透明中性色（深色主题） */
+  --ring-dim: rgba(255, 255, 255, .30);      /* 没有数 / 过期时的灰环 */
+}
+body.theme-light #dock { --ring-track: rgba(23, 28, 45, .13); --ring-dim: rgba(23, 28, 45, .38); }
+
+/* 造型描边：与 .glass 的描边同一套配色（深色 rgba(255,255,255,.14) / 浅色 rgba(255,255,255,.65)） */
+#dock .dock-edge { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; pointer-events: none; }
+#dock .dock-edge path { fill: none; stroke: rgba(255, 255, 255, .14); stroke-width: 2; }
+body.theme-light #dock .dock-edge path { stroke: rgba(255, 255, 255, .65); }
+
+/* 圆圈：40px 圆环 + 中心 logo + 环下百分比数字（参考 iOS 电池小组件） */
+#dock .dc { display: flex; flex-direction: column; align-items: center; gap: 3px; }
+#dock .dc-top { position: relative; width: 40px; height: 40px; }
+#dock .dc-ring { display: block; width: 40px; height: 40px; }
+#dock .dc-track { fill: none; stroke: var(--ring-track); stroke-width: 3.5; }
+#dock .dc-arc {
+  fill: none; stroke-width: 3.5; stroke-linecap: round;
+  /* 进度弧从 12 点起、顺时针长出来：绕圆心转 -90°，dashoffset 由满圈往回减 */
+  transform-box: view-box; transform-origin: 50% 50%; transform: rotate(-90deg);
+  transition: stroke-dashoffset .35s, stroke .35s;
+}
+#dock .dc-none .dc-arc { stroke: none; }              /* 取不到数（没填预算 / 无窗口）：只留底环 */
+#dock .dc-warn .dc-arc { stroke: var(--ring-dim); }   /* 凭据失效 / 更新失败：整圈灰 */
+#dock .dc-logo {
+  position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+  color: var(--ink);      /* 三家 logo 同一颜色 = 主题前景色，不做任何一家的特殊着色 */
+}
+#dock .dc-logo svg { display: block; width: 18px; height: 18px; }
+#dock .dc-pct { font-size: 11px; line-height: 1.2; color: var(--ink2); font-variant-numeric: tabular-nums; }
+#dock .dc-warn .dc-pct { color: var(--ink3); }
+/* 小警示角标：凭据失效 / 更新失败时才出来（细节在原生 title 里） */
+#dock .dc-badge {
+  display: none; position: absolute; top: -1px; right: -1px;
+  width: 13px; height: 13px; align-items: center; justify-content: center;
+  border-radius: 50%; font-size: 9px; font-style: normal; font-weight: 700; line-height: 1;
+  color: #1a1206; background: #fbbf24; box-shadow: 0 0 0 1.5px rgba(10, 12, 18, .5);
+}
+#dock .dc-warn .dc-badge { display: flex; }
+body.theme-light #dock .dc-badge { color: #fff; background: #d97706; box-shadow: 0 0 0 1.5px rgba(255, 255, 255, .9); }
+
+/* 空态（全部账户停用 / 还没配）：列里留一个安静的虚线圆 + ⚙，点它直达设置。
+   尺寸与圆圈同一套（40px），颜色吃贴边的主题变量（浅深各一套） */
+#dock .dc-empty {
+  display: flex; align-items: center; justify-content: center;
+  width: 40px; height: 40px; border-radius: 50%;
+  border: 1.5px dashed var(--ring-dim);
+  color: var(--ink3); font-size: 15px; line-height: 1;
+}
+#dock .dc-empty .dc-gear { opacity: .85; }
+#dock .dc-empty:hover { border-color: var(--ink3); color: var(--ink2); }
+
 /* ============ 面板（B） ============ */
 #panel { flex-direction: column; padding: 16px 18px 16px; border-radius: 16px; position: relative; }
 #panel .phead {
