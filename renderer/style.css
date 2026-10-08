@@ -220,19 +220,20 @@ body.no-providers #capsule .hint-all { display: flex; }
 
 /* ============ 贴边列（dock）：每个启用的账户一个圆圈 ============
    窗口就是内容本身（贴边时主进程不留 PAD），所以这一视图下 body 不留阴影走廊。
-   造型（贴边侧的反向圆角）由渲染层按实测尺寸写 clip-path（见 app.js 的 dockPathData）：
-   同一个 path 让 .glass 的配色 / 噪点正好铺满这个形状，描边则交给 .dock-edge 的 path ——
-   clip 会把描边的外半边裁掉，正好剩 1px，直线段与凹弧同粗。 */
+   造型（流体融合吸附：贴边侧并入屏幕边 + 上下反向圆角喇叭口）由渲染层按实测尺寸写 clip-path
+   （见 app.js 的 dockPathData）：clip 让 .glass 的配色 / 噪点正好铺满这个形状；描边交给 .dock-edge
+   的开放 path（不含贴边侧）—— clip 会把描边的外半边裁掉，正好剩 1px，直边与圆角同粗。 */
 body.view-dock { padding: 0; }
 body.view-dock #dock { display: flex; }
 
 #dock {
   position: relative; flex-direction: column; align-items: center;
-  gap: calc(10px * var(--ds)); padding: calc(26px * var(--ds)) calc(12px * var(--ds));
-  /* 上下留白 26（= 渲染层 DOCK_RISE）：凹弧从身体顶/底边升起切进屏幕边的形变空间。
-     16 太挤 ——「底框离圆圈太近，看不出吸附」（用户实测反馈）。 */
+  gap: calc(10px * var(--ds)); padding: calc(36px * var(--ds)) calc(12px * var(--ds));
+  /* 上下留白 36 = 喇叭口高度 24（渲染层 DOCK_FLARE，身体顶 / 底边就在这）+ 圆圈到边 12（与左右同距）。
+     上一版留白 = 弧高，身体顶边正好压在圆圈上 ——「底框离圆圈太近」（用户实测反馈）。 */
   width: max-content; height: max-content;   /* 尺寸由内容定，渲染层实测后上报 */
   border: 0; border-radius: 0;               /* 形状全归 clip-path，避免和 border-radius 打架 */
+  box-shadow: none;                          /* 矩形盒的阴影 / 内高光对不上造型，clip 后只剩残片 */
   --ds: 1;                                   /* 圆圈缩放（config.dockScale）：这里所有尺寸都乘它 */
   --ring-track: rgba(255, 255, 255, .14);    /* 底环：半透明中性色（深色主题） */
   --ring-dim: rgba(255, 255, 255, .30);      /* 没有数 / 过期时的灰环 */
@@ -242,6 +243,10 @@ body.theme-light #dock { --ring-track: rgba(23, 28, 45, .13); --ring-dim: rgba(2
 /* 造型描边：与 .glass 的描边同一套配色（深色 rgba(255,255,255,.14) / 浅色 rgba(255,255,255,.65)） */
 #dock .dock-edge { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; pointer-events: none; }
 #dock .dock-edge path { fill: none; stroke: rgba(255, 255, 255, .14); stroke-width: 2; }
+/* 描边在喇叭口里渐隐：离屏幕边一个喇叭口宽（24）起淡出，到屏幕边归零 —— 轮廓「化」进屏幕边，
+   而不是一条亮线戳到边上 */
+body.dock-right #dock .dock-edge { -webkit-mask-image: linear-gradient(to left, transparent 1px, #000 calc(24px * var(--ds))); }
+body.dock-left #dock .dock-edge { -webkit-mask-image: linear-gradient(to right, transparent 1px, #000 calc(24px * var(--ds))); }
 body.theme-light #dock .dock-edge path { stroke: rgba(255, 255, 255, .65); }
 
 /* 圆圈：40px 圆环 + 中心 logo + 环下百分比数字（参考 iOS 电池小组件）。

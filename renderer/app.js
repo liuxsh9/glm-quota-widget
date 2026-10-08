@@ -336,12 +336,10 @@ function syncCapsuleSize() {
    账户集合没变时**不重建**列：只更新环与数字 —— 否则状态每次推送（每秒都可能有）圆圈都会闪。 */
 const DOCK_R = 18.25;                 // 圆环半径：直径 40 − 环宽 3.5（SVG viewBox 内部单位，跟随 CSS 缩放）
 const DOCK_C = 2 * Math.PI * DOCK_R;  // 圆周长：进度弧的 dasharray
-const DOCK_RISE = 26;                 // 贴边侧凹弧的进深/升高（× dockScale），与贴边列上下留白同值：
-                                      // 凹弧从身体顶/底边升起、以**竖直切线**切进屏幕边，曲率两端归零
-                                      // （G2 曲率连续，见 dockPathData）；留白就是这条弧的形变空间
-const DOCK_RISE_M = 0.35;             // 凹弧饱满度：对角点距角的比例（越小越贴边、越大越饱满）
-const DOCK_RISE_A = 0.27;             // 进入凹弧前的平缓段长度（相对进深）
-const DOCK_CORNER = 15;               // 远离屏幕一侧的正常圆角（与 .glass 的 15px 一致，× dockScale）
+const DOCK_CORNER = 15;               // 主体圆角半径（× dockScale）：远端两角与贴边侧两处反向圆角**同一个 r**
+const DOCK_SMOOTH = 0.6;              // 连续曲率圆角的平滑度（Figma corner smoothing 同口径）：每个角沿两边
+                                      // 各占 (1 + 0.6) × r = 24 —— 也就是贴边侧喇叭口沿屏幕边升起的高度
+const DOCK_FLARE = (1 + DOCK_SMOOTH) * DOCK_CORNER;   // = 24，CSS 里 #dock 的上下留白 36 = 它 + 12 间距
 
 /** 这一列画哪些圆圈：provider 注册表序 → 每家的账户原序 → 只留启用的 */
 function dockCells(s) {
@@ -453,49 +451,64 @@ function renderDock(s) {
   syncDockSize();
 }
 
-/* ---------- 贴边造型（2026-10-08 按用户实测反馈改版）----------
-   贴边侧（右侧的 x=w / 左侧的 x=0）从 y=0 贯通到 y=h —— 整条边都贴着屏幕边；身体占
-   y ∈ [f, h-f] 全宽，上下两端各以一段凹弧「肩部」收拢：肩弧是四分之一圆，从身体的顶边 /
-   底边（y=f / y=h-f）起、flare 到贴边侧的顶 / 底边，像是被屏幕边缘「吸住」；远离屏幕的
-   一侧是正常圆角 R。第一版把贴边侧两角挖掉 1/4 圆，用户实测后否掉了它（材料不到屏幕边、
-   角上是空的）。同一个 d 既当裁剪（clip-path，让 .glass 的配色 / 噪点正好铺满这个形状）
-   又当描边（.dock-edge path），所以背景与描边完全同形。左右镜像（sweep 标志取反）。
-   所有参数（f / R）乘 dockScale —— 圆圈大小与肩弧一起缩放，形状比例不变。 */
-/** 贴边列造型（G2 曲率连续的反向圆角，用户 2026-10-08 明确要求）：
- *  贴边侧不再与屏幕边「90° 垂直拼接」——身体顶/底边从距屏幕边 e 处起，用**两段对称三次曲线**
- *  的凹弧升起、以竖直切线切进屏幕边；曲线两端与直边曲率归零、两段接合处曲率严格相等，
- *  全程无曲率跳变（G2）。贴边侧仍贯通整高（y 0→h 都是材料）。
- *  k 是「形变量」（1 = 稳定态；0.12 左右 = 刚吸附、凹弧还没长出来的入场起点，同结构可插值）。 */
+/* ---------- 贴边造型：流体融合吸附（2026-10-08 用户第三轮反馈）----------
+   目标：胶囊像液滴贴上屏幕边 —— 贴边侧整条并入屏幕物理边缘（没有描边、没有缝），外露的上下两端
+   以**反向圆角**（喇叭口）切进屏幕边；反向圆角与远端两个凸圆角是**同一个角**（同 r、同平滑度，
+   只是转向相反），所以一条轮廓上四个角的曲率完全对称匹配。
+   每个角都是「连续曲率圆角」（iOS / Figma 的 squircle 角）：直边 → 三次曲线（端点曲率 0）→ 圆弧
+   → 三次曲线 → 直边，沿两边各占 p = (1 + smooth) × r。上一版的问题：凹弧进深 26 却对着远端 15 的
+   圆角（大小不配），又把身体顶边压到留白边上（圆圈贴着顶边）；贴边侧还描了一道边（屏幕边上一条亮线）。
+   同一个 fill 既当裁剪（clip-path）又是描边的底；描边另走一条**不含贴边侧**的开放路径。 */
+
+/** 一个连续曲率圆角（figma-squircle 的 90° 角算法）：顶点 V，入射方向 u、出射方向 v（单位向量），
+ *  从 V − p·u 画到 V + p·v。凸 / 凹由 u×v 的符号自动决定（圆弧 sweep 随之翻转）。 */
+function dockCorner(V, u, v, r, sm, n) {
+  const rad = (deg) => deg * Math.PI / 180;
+  const p = (1 + sm) * r;
+  const arcDeg = 90 * (1 - sm);
+  const L = Math.sin(rad(arcDeg / 2)) * r * Math.SQRT2;          // 圆弧段沿两边各前进的距离
+  const alpha = (90 - arcDeg) / 2;
+  const p34 = r * Math.tan(rad(alpha / 2));
+  const beta = 45 * sm;
+  const c = p34 * Math.cos(rad(beta)), d = c * Math.tan(rad(beta));
+  const b = (p - L - c - d) / 3, a = 2 * b;
+  const P = (du, dv, o = V) => [o[0] + u[0] * du + v[0] * dv, o[1] + u[1] * du + v[1] * dv];
+  const S = P(-p, 0);
+  const A0 = P(a + b + c - p, d);                                // 第一段三次曲线终点 = 圆弧起点
+  const A1 = P(L, L, A0);                                        // 圆弧终点
+  const sweep = u[0] * v[1] - u[1] * v[0] > 0 ? 1 : 0;
+  const q = (pt) => `${n(pt[0])} ${n(pt[1])}`;
+  return {
+    start: S,
+    d: ` C ${q(P(a - p, 0))} ${q(P(a + b - p, 0))} ${q(A0)}`
+      + ` A ${n(r)} ${n(r)} 0 0 ${sweep} ${q(A1)}`
+      + ` C ${q(P(d, c, A1))} ${q(P(d, b + c, A1))} ${q(P(d, a + b + c, A1))}`,
+  };
+}
+
+/** 贴边列造型：返回 { fill, edge }。fill = 闭合轮廓（clip-path），edge = 去掉贴边侧那条直线的
+ *  开放路径（描边用：贴边侧与屏幕边融为一体，不能有线）。
+ *  k ∈ [0, 1] 是吸附收口的进度：身体位置不动，贴边侧两处反向圆角的 r 从 0 长到满 —— 材料像液体
+ *  一样沿屏幕边「爬」上去形成弯月面（1 = 稳定态）。 */
 function dockPathData(w, h, side, s, k = 1) {
-  const e = DOCK_RISE * s * k, R = DOCK_CORNER * s;
-  const m = e * DOCK_RISE_M, a = e * DOCK_RISE_A;
+  const R = DOCK_CORNER * s, E = DOCK_FLARE * s;                  // E：身体顶 / 底边距窗口上 / 下缘
+  const rf = Math.max(0.01, R * k);                              // 反向圆角当前半径
   const n = (v) => Math.round(v * 100) / 100;
-  if (side === 'left') {          // 贴左边：屏幕边是 x=0
-    return `M ${n(w - R)} ${n(e)}`
-      + ` H ${n(e)}`
-      + ` C ${n(e - a)} ${n(e)} ${n(2 * m)} ${n(e)} ${n(m)} ${n(e - m)}`   // 身体顶边 → 凹弧升起
-      + ` C 0 ${n(e - 2 * m)} 0 ${n(a)} 0 0`                              // 竖直切线切进屏幕边（曲率归零）
-      + ` V ${n(h)}`
-      + ` C 0 ${n(h - a)} 0 ${n(h - 2 * m)} ${n(m)} ${n(h - m)}`          // 屏幕边 → 凹弧降回身体底边
-      + ` C ${n(2 * m)} ${n(h - e)} ${n(e - a)} ${n(h - e)} ${n(e)} ${n(h - e)}`
-      + ` H ${n(w - R)}`
-      + ` A ${R} ${R} 0 0 0 ${n(w)} ${n(h - e - R)}`                      // 远端下角（镜像：sweep 翻转）
-      + ` V ${n(e + R)}`
-      + ` A ${R} ${R} 0 0 0 ${n(w - R)} ${n(e)}`                          // 远端上角（镜像：sweep 翻转）
-      + ` Z`;
-  }
-  return `M ${n(R)} ${n(e)}`      // 贴右边：屏幕边是 x=w
-    + ` H ${n(w - e)}`
-    + ` C ${n(w - e + a)} ${n(e)} ${n(w - 2 * m)} ${n(e)} ${n(w - m)} ${n(e - m)}`
-    + ` C ${n(w)} ${n(e - 2 * m)} ${n(w)} ${n(a)} ${n(w)} 0`
-    + ` V ${n(h)}`
-    + ` C ${n(w)} ${n(h - a)} ${n(w)} ${n(h - 2 * m)} ${n(w - m)} ${n(h - m)}`
-    + ` C ${n(w - 2 * m)} ${n(h - e)} ${n(w - e + a)} ${n(h - e)} ${n(w - e)} ${n(h - e)}`
-    + ` H ${n(R)}`
-    + ` A ${R} ${R} 0 0 1 0 ${n(h - e - R)}`
-    + ` V ${n(e + R)}`
-    + ` A ${R} ${R} 0 0 1 ${n(R)} ${n(e)}`
-    + ` Z`;
+  const X = (x) => side === 'left' ? w - x : x;                  // 一律按「贴右」算，贴左水平镜像
+  const pt = (x, y) => [X(x), y];
+  const dir = (dx, dy) => [side === 'left' ? -dx : dx, dy];
+  // 顺着「贴右」时的顺时针：远端上角 → 顶边 → 上喇叭口 → 贴边侧 → 下喇叭口 → 底边 → 远端下角 → 远端边
+  const tl = dockCorner(pt(0, E), dir(0, -1), dir(1, 0), R, DOCK_SMOOTH, n);
+  const tf = dockCorner(pt(w, E), dir(1, 0), dir(0, -1), rf, DOCK_SMOOTH, n);
+  const bf = dockCorner(pt(w, h - E), dir(0, -1), dir(-1, 0), rf, DOCK_SMOOTH, n);
+  const bl = dockCorner(pt(0, h - E), dir(-1, 0), dir(0, -1), R, DOCK_SMOOTH, n);
+  const q = (p) => `${n(p[0])} ${n(p[1])}`;
+  const top = `${tl.d} L ${q(tf.start)}${tf.d}`;                 // 远端上角 + 顶边 + 上喇叭口（止于屏幕边）
+  const bottom = `${bf.d} L ${q(bl.start)}${bl.d}`;              // 下喇叭口（起于屏幕边）+ 底边 + 远端下角
+  return {
+    fill: `M ${q(tl.start)}${top} L ${q(bf.start)}${bottom} Z`,  // 贴边侧直线 + 远端边由 L / Z 补上
+    edge: `M ${q(bf.start)}${bottom} L ${q(tl.start)}${top}`,
+  };
 }
 
 /** 圆圈缩放（config.dockScale）：主进程下发前已按 [0.6, 1.6] 规范化，这里再兜一层，认不出的按 1 */
@@ -524,27 +537,27 @@ function applyDockShape() {
 }
 
 /** 把一条轮廓落到裁剪与描边上（两者同形） */
-function commitDockShape(el, d) {
-  el.style.clipPath = `path("${d}")`;
+function commitDockShape(el, { fill, edge }) {
+  el.style.clipPath = `path("${fill}")`;
   const path = el.querySelector('.dock-edge path');
-  if (path) { path.setAttribute('d', d); path.style.d = `path("${d}")`; }
+  if (path) { path.setAttribute('d', edge); path.style.d = `path("${edge}")`; }
 }
 
-/** 吸附入场动画：凹弧从「还没长出来」（k=0.12）长到最终形 —— 像被屏幕边吸住、玻璃收口。
+/** 吸附入场动画：反向圆角从 0 长到满 —— 像液滴碰到屏幕边、沿边缘爬出弯月面后稳住。
  *  用 rAF 逐帧重算 k（每帧按当前实测尺寸重新生成路径，缩放/尺寸变化也跟得上）。 */
 function dockAnimateIn() {
   const el = $('#dock');
   if (!el) return;
   cancelAnimationFrame(dockAnim);
-  const t0 = performance.now(), DUR = 320;
+  const t0 = performance.now(), DUR = 460;
   const frame = (now) => {
     const k = Math.min(1, (now - t0) / DUR);
-    const ease = 1 - Math.pow(1 - k, 3);                       // ease-out：先快后慢，收口稳定
+    const ease = 1 - Math.pow(1 - k, 4);                       // ease-out quart：先「吸」一下，再慢慢铺开稳住
     const rect = el.getBoundingClientRect();
     if (rect.width && rect.height) {
       const side = (st && st.config && st.config.dockSide) === 'left' ? 'left' : 'right';
       const s = dockScaleOf(st);
-      commitDockShape(el, dockPathData(Math.round(rect.width), Math.round(rect.height), side, s, 0.12 + 0.88 * ease));
+      commitDockShape(el, dockPathData(Math.round(rect.width), Math.round(rect.height), side, s, ease));
     }
     if (k < 1) { dockAnim = requestAnimationFrame(frame); return; }
     dockAnim = 0;

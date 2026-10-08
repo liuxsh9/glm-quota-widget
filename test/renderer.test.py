@@ -1765,118 +1765,92 @@ with sync_playwright() as p:
           const bb = el.querySelector('.dock-edge path').getBBox();
           return [bb.width, bb.height, el.getBoundingClientRect().height]; }""")))
 
-    print("贴边模式（dock）· 造型（G2 曲率连续的反向圆角：贴边侧贯通整高、凹弧切进屏幕边 / 远端正常圆角）:")
-    # 几何按参数（e = 26s 凹弧进深、R = 15s 远端圆角）从**真实那条 path** 上点名：
-    # SVGPathElement.isPointInFill 直接问路径「这个点在不在形状里」（Chromium 支持）。
-    # 凹弧 = 两段对称三次曲线：与身体顶边相切处曲率归零、两段接合处曲率相等、以竖直切线切进
-    # 屏幕边（G2 曲率连续）——所以「顶边（y≈0）只剩贴边附近的一小段竖直收进」，不再与屏幕边
-    # 90° 垂直拼接；贴边侧整条 x=w 仍是材料（贯通整高）。
+    print("贴边模式（dock）· 造型（流体融合吸附：贴边侧并入屏幕边 / 上下反向圆角喇叭口 / 四角同一个连续曲率圆角）:")
+    # 几何按参数（r = 15s 圆角、平滑 0.6 → 每角沿两边各占 p = 24s，身体顶 / 底边在 y = p / h − p）
+    # 从**真实那条 path** 上点名：SVGPathElement.isPointInFill 直接问路径「这个点在不在形状里」。
+    # 裁剪（clip-path）是闭合轮廓；描边是另一条**不含贴边侧**的开放路径（贴边侧不能有线）。
     GEOM = """(s) => {
         const el = document.querySelector('#dock');
-        const path = el.querySelector('.dock-edge path');
+        const edge = el.querySelector('.dock-edge path');
         const r = el.getBoundingClientRect();
         const w = r.width, h = r.height;
         const side = document.body.classList.contains('dock-left') ? 'left' : 'right';
-        const e = 26 * s, R = 15 * s;                              // 与渲染层同一套参数（DOCK_RISE=26）
+        const p = 24 * s;                                          // 与渲染层同一套参数（DOCK_FLARE）
         const E = (d) => side === 'left' ? d : w - d;              // 距贴边侧 d 处的绝对 x
-        const inp = (x, y) => path.isPointInFill(new DOMPoint(x, y));
-        // ① 解析 d 拿竖直直线段（贴边侧那条）
-        const toks = path.getAttribute('d').match(/[A-Za-z]|-?\\d*\\.?\\d+/g) || [];
-        const NP = { M: 2, H: 1, V: 1, A: 7, C: 6, Z: 0 };
-        let i = 0, cmd = null, x = 0, y = 0, verts = [];
-        while (i < toks.length) {
-          if (/[A-Za-z]/.test(toks[i])) { cmd = toks[i].toUpperCase(); i++; if (cmd === 'Z') continue; }
-          const n = NP[cmd] || 2;
-          const v = toks.slice(i, i + n).map(Number); i += n;
-          if (cmd === 'M') { x = v[0]; y = v[1]; }
-          else if (cmd === 'H') { x = v[0]; }
-          else if (cmd === 'V') { verts.push([x, y, v[0]]); y = v[0]; }
-          else if (cmd === 'A') { x = v[5]; y = v[6]; }
-          else if (cmd === 'C') { x = v[4]; y = v[5]; }
-        }
-        const longest = verts.slice().sort((a, b) => Math.abs(b[2] - b[1]) - Math.abs(a[2] - a[1]))[0];
-        // ② 沿真路径取样：远端上角离边界多远 + 顶边（y≈0）剩哪一段 + 凹弧在 y=e/2 处的边界距离
-        const far = side === 'left' ? { x: w, y: 0 } : { x: 0, y: 0 };
-        const L = path.getTotalLength();
-        let nearFar = Infinity, topMin = Infinity, topMax = -Infinity, riseB = Infinity;
-        for (let k = 0; k <= 1600; k++) {
-          const p = path.getPointAtLength(L * k / 1600);
-          if (Math.abs(p.y - far.y) < 30) nearFar = Math.min(nearFar, Math.hypot(p.x - far.x, p.y - far.y));
-          if (p.y < 0.6) { topMin = Math.min(topMin, p.x); topMax = Math.max(topMax, p.x); }
-          const dWall = side === 'left' ? p.x : w - p.x;           // 到贴边侧边界的距离
-          if (Math.abs(p.y - e / 2) < 0.8 && dWall > 0.2 * s && dWall < 2.2 * e) riseB = Math.min(riseB, dWall);
-        }
+        const ns = 'http://www.w3.org/2000/svg';
+        const svg = document.createElementNS(ns, 'svg');
+        svg.style.cssText = 'position:absolute;left:0;top:0;width:0;height:0;overflow:visible';
+        const fill = document.createElementNS(ns, 'path');
+        const m = /^path\\("(.*)"\\)$/.exec(el.style.clipPath);
+        fill.setAttribute('d', m ? m[1] : '');
+        svg.appendChild(fill); document.body.appendChild(svg);
+        try {
+        const inp = (x, y) => fill.isPointInFill(new DOMPoint(x, y));
+        const sample = (pa, N) => { const L = pa.getTotalLength(), out = [];
+          for (let k = 0; k <= N; k++) out.push(pa.getPointAtLength(L * k / N)); return out; };
+        const fp = sample(fill, 2400), ep = sample(edge, 2400);
+        const dWall = (pt) => side === 'left' ? pt.x : w - pt.x;
+        // ① 贴边侧：闭合轮廓上贴着 x=w 的点覆盖整高；描边上一个都没有（中段）
+        const wallYs = fp.filter((pt) => dWall(pt) < 0.05).map((pt) => pt.y);
+        const edgeOnWall = ep.filter((pt) => dWall(pt) < 0.3 && pt.y > p && pt.y < h - p).length;
+        // ② 顶边（y≈0）：只剩贴边那一点（喇叭口以竖直切线切进屏幕边）
+        const top = fp.filter((pt) => pt.y < 0.6).map(dWall);
+        // ③ 四角同一个角：凸角（远端，顶点 (远端, p)）与凹角（喇叭口，顶点 (贴边, p)）的
+        //    「顶点 → 轮廓」最近距离相等（形状一样、只是转向相反）
+        const farV = { x: E(w), y: p }, wallV = { x: E(0), y: p };
+        const near = (V, pts) => Math.min(...pts.map((pt) => Math.hypot(pt.x - V.x, pt.y - V.y)));
+        const convexD = near(farV, fp.filter((pt) => pt.y < 3 * p));
+        const concaveD = near(wallV, fp.filter((pt) => pt.y < 3 * p && dWall(pt) > 0.05));
+        const ok = (x, y) => inp(x, y);
         return {
-          side, w: +w.toFixed(2), h: +h.toFixed(2), s, e: +e.toFixed(2),
-          attachX: +longest[0].toFixed(2), attachLen: +Math.abs(longest[2] - longest[1]).toFixed(2),
-          nearFar: +nearFar.toFixed(2), topMin: +topMin.toFixed(2), topMax: +topMax.toFixed(2),
-          riseB: +riseB.toFixed(2),
+          side, w: +w.toFixed(2), h: +h.toFixed(2), s, p,
+          wallMin: +Math.min(...wallYs).toFixed(2), wallMax: +Math.max(...wallYs).toFixed(2), edgeOnWall,
+          topMax: +Math.max(...top).toFixed(2), topN: top.length,
+          convexD: +convexD.toFixed(2), concaveD: +concaveD.toFixed(2),
           pts: {
-            edgeTop: inp(E(s), e / 2),                    // 贴边侧贯通区中段：(w−1, e/2) 是材料（G2 收口后在 y→0 处收成尖）
-            edgeBot: inp(E(s), h - e / 2),                // 贴边侧贯通区中下段：(w−1, h−e/2)
-            wallHugOut: inp(E(1.0 * s), 0.5 * s),         // y≈0.5：凹弧已收到贴边 1px 内 → (w−1, 0.5) 在外
-            riseIn: inp(E(riseB - 1.4 * s), e / 2),       // 离屏幕边更近 1.4px：材料
-            riseOut: inp(E(riseB + 1.4 * s), e / 2),      // 离屏幕边更远 1.4px：空区
-            aboveBody: inp(E(2 * e + 3 * s), 3 * s),      // 身体顶边上方（x 远离贴边）是空区
-            bodyTop: inp(E(2 * e + 3 * s), e + 3 * s),    // 同一 x、身体顶边下方回到材料
-            farCorner: inp(side === 'left' ? w - 2 * s : 2 * s, 2 * s),   // 远端角 (2,2) 不在形状里
+            edgeTop: ok(E(s), p * 0.75),                  // 喇叭口下段贴边 1px：材料（上段是贴墙的细尖）
+            edgeBot: ok(E(s), h - p * 0.75),
+            wallHugOut: ok(E(1.5 * s), 0.3 * s),          // 尖端：竖直切进屏幕边 → (w−1.5, 0.3) 在外
+            flareOut: ok(E(p * 0.6), p * 0.4),            // 喇叭口凹弧外侧（顶点那一侧）是空区
+            aboveBody: ok(w / 2, p - 3 * s),              // 身体顶边上方（宽度中线）是空区
+            bodyTop: ok(w / 2, p + 3 * s),                // 同一 x、身体顶边下方回到材料
+            farCorner: ok(E(w - 2 * s), p + 2 * s),       // 远端角 (2, p+2) 在凸圆角外
+            farEdge: ok(E(w - 1 * s), h / 2),             // 远端直边中段 1px 内是材料
           },
         };
+        } finally { svg.remove(); }
       }"""
+    def geom_ok(g, label):
+        t(f"{label}贴边侧整条并入屏幕边：闭合轮廓贴着 x=w 的点覆盖 y 0→h",
+          g["wallMin"] <= 1 and g["wallMax"] >= g["h"] - 1, str(g))
+        t(f"{label}贴边侧没有描边（描边路径在屏幕边中段一个点都没有）", g["edgeOnWall"] == 0, str(g))
+        t(f"{label}喇叭口以竖直切线切进屏幕边：y≈0 处只剩贴边那一点（≤1px）", g["topMax"] <= 1, str(g))
+        t(f"{label}喇叭口贴边侧有材料 / 尖端在外 / 凹弧外侧是空区",
+          g["pts"]["edgeTop"] and g["pts"]["edgeBot"] and not g["pts"]["wallHugOut"] and not g["pts"]["flareOut"],
+          str(g["pts"]))
+        t(f"{label}身体顶边在 y=p：上方空、下方实", not g["pts"]["aboveBody"] and g["pts"]["bodyTop"], str(g["pts"]))
+        t(f"{label}远端是凸圆角（(2,p+2) 在外）、远端直边是材料",
+          not g["pts"]["farCorner"] and g["pts"]["farEdge"], str(g["pts"]))
+        t(f"{label}反向圆角与远端圆角是同一个角（顶点到轮廓的距离相等，±0.3）",
+          g["convexD"] > 2 and abs(g["convexD"] - g["concaveD"]) <= 0.3, str(g))
     g = pg.evaluate(GEOM, 1)
-    # 贴边侧：整条 x=w 都是材料（贯通整高）
-    t("贴边侧（右）：直线落在窗口右边缘 x=w 上", g["side"] == "right" and abs(g["attachX"] - g["w"]) <= 1, str(g))
-    t("贴边侧直线贯通整高（y 0→h 都是材料）", abs(g["attachLen"] - g["h"]) <= 1.5, str(g))
-    t("贴边侧贯通区有材料：(w−1,e/2) 与 (w−1,h−e/2) 在形状内",
-      g["pts"]["edgeTop"] and g["pts"]["edgeBot"], str(g["pts"]))
-    # G2 收口：凹弧以竖直切线切进屏幕边 —— y=0.5 处材料只剩贴边 1px 内的一条
-    t("凹弧以竖直切线切进屏幕边（G1 端点）：y=0.5 处 (w−1, 0.5) 已在形状外",
-      not g["pts"]["wallHugOut"], str(g["pts"]))
-    # 顶边不再与屏幕边 90° 拼接：y≈0 的横向段只剩贴边附近 ≈2px
-    t("顶边（y≈0）不再与屏幕边 90° 垂直拼接：横向段只剩贴边 ≈2px（凹弧把端头收进屏边）",
-      abs(g["topMin"] - g["w"]) <= 2 and abs(g["topMax"] - g["w"]) <= 2, str(g))
-    t("凹弧在 y=e/2 处内外有别（边界从真路径上取样）",
-      g["pts"]["riseIn"] and not g["pts"]["riseOut"], str(g["pts"]))
-    t("凹弧进深 e=26：y=e/2 处边界距屏幕边在 (0, e) 之间（收腰位置合理）",
-      0.5 < g["riseB"] < g["e"], str(g))
-    t("身体顶边上方（x 远离贴边）是空区 (w−2e−3, 3)", not g["pts"]["aboveBody"], str(g["pts"]))
-    t("同一 x、身体顶边下方又回到形状里 (w−2e−3, e+3)", g["pts"]["bodyTop"], str(g["pts"]))
-    # 远端：正常的大圆角 R=15，弧心在形状里侧（距角 ≈ √(R²+(e+R)²) − R ≈ 15.9）
-    t("远端上角是正常圆角：(2,2) 在形状外", not g["pts"]["farCorner"], str(g["pts"]))
-    t("远端圆角的凸弧边界离窗口角 ≈ √(R²+(e+R)²)−R = 28.66（弧心在 (R, e+R)）",
-      abs(g["nearFar"] - 28.66) <= 1.2, str(g["nearFar"]))
+    t("贴边侧（右）：body 是 dock-right", g["side"] == "right", str(g))
+    geom_ok(g, "")
     pg.evaluate("() => { const s = window.__state; s.config.dockSide = 'left'; window.__cb(s); }")
     pg.wait_for_timeout(200)
     gl = pg.evaluate(GEOM, 1)
-    t("换到左贴：body 换 class + 贴边侧直线跑到 x=0", gl["side"] == "left" and abs(gl["attachX"]) <= 1
+    t("换到左贴：body 换 class", gl["side"] == "left"
       and pg.evaluate("document.body.classList.contains('dock-left')"), str(gl))
-    t("换到左贴：直线同样贯通整高", abs(gl["attachLen"] - gl["h"]) <= 1.5, str(gl))
-    t("换到左贴：贴边侧贯通区仍是材料（(1,e/2) / (1,h−e/2) 在形状内）",
-      gl["pts"]["edgeTop"] and gl["pts"]["edgeBot"], str(gl["pts"]))
-    t("换到左贴：凹弧同样以竖直切线切进屏幕边（镜像）", not gl["pts"]["wallHugOut"], str(gl["pts"]))
-    t("换到左贴：顶边横向段同样只剩贴边 ≈2px（不再 90° 拼接）",
-      abs(gl["topMin"]) <= 2 and abs(gl["topMax"]) <= 2, str(gl))
-    t("换到左贴：凹弧内外一致、身体上下空区镜像", gl["pts"]["riseIn"] and not gl["pts"]["riseOut"]
-      and not gl["pts"]["aboveBody"] and gl["pts"]["bodyTop"], str(gl["pts"]))
-    t("换到左贴：远端仍是正常圆角（(w−2,2) 在形状外，凸弧离角 ≈28.66）",
-      not gl["pts"]["farCorner"] and abs(gl["nearFar"] - 28.66) <= 1.2, str(gl))
+    geom_ok(gl, "换到左贴：")
 
     print("贴边模式（dock）· 造型随 dockScale 等比（0.75 复测同一套点名）:")
     pg.evaluate("() => { const s = window.__state; s.config.dockSide = 'right';"
                 " s.config.dockScale = 0.75; window.__cb(s); }")
     pg.wait_for_timeout(250)
     g75 = pg.evaluate(GEOM, 0.75)
-    t("0.75 倍：贴边直线仍在右边缘且贯通整高", g75["side"] == "right"
-      and abs(g75["attachX"] - g75["w"]) <= 1 and abs(g75["attachLen"] - g75["h"]) <= 1.5, str(g75))
-    t("0.75 倍：凹弧进深 e = 26 × 0.75 = 19.5（顶边横向段仍只剩贴边 ≈2px）", abs(g75["e"] - 19.5) <= 0.01
-      and abs(g75["topMin"] - g75["w"]) <= 2 and abs(g75["topMax"] - g75["w"]) <= 2, str(g75))
-    t("0.75 倍：各点名点随比例缩放后结论不变（角上在内 / 竖直收进 / 弧内外有别 / 身体上下有别 / 远端在圆角外）",
-      g75["pts"]["edgeTop"] and g75["pts"]["edgeBot"] and not g75["pts"]["wallHugOut"]
-      and g75["pts"]["riseIn"] and not g75["pts"]["riseOut"]
-      and not g75["pts"]["aboveBody"] and g75["pts"]["bodyTop"] and not g75["pts"]["farCorner"],
-      str(g75["pts"]))
-    t("0.75 倍：远端圆角等比（凸弧离角 ≈ 28.66 × 0.75）",
-      abs(g75["nearFar"] - 28.66 * 0.75) <= 1.2, str(g75["nearFar"]))
+    geom_ok(g75, "0.75 倍：")
+    t("0.75 倍：圆角等比（顶点到轮廓距离 = 1 倍时 × 0.75）",
+      abs(g75["convexD"] - g["convexD"] * 0.75) <= 0.3, f'{g["convexD"]} → {g75["convexD"]}')
     print("贴边模式（dock）· 圆圈大小（dockScale=0.75）落到 --ds / 盒尺寸 / 上报:")
     pg.evaluate("() => { const s = window.__state; s.config.dockScale = 1; window.__cb(s); }")   # 先回标准档取基线
     pg.wait_for_timeout(200)
