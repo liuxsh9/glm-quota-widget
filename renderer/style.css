@@ -17,17 +17,17 @@ body.acrylic .shell    { --shell: rgba(15, 17, 24, .55); }
 /* 档位色下到「单个账户」：多账户时每家水位各不相同，整窗一个档位会让 A 账户的超支
    把 B 账户也染红。挂上 data-tier 的 pane / 账户格按自己的水位取色，没挂的沿用全局档位
    （全局档位仍然驱动托盘图标与面板头部的状态文案，不受影响） */
-#panel .pane[data-tier="low"],  #capsule .cap-acct[data-tier="low"]  { --g1: #22d3ee; --g2: #8b5cf6; }
-#panel .pane[data-tier="mid"],  #capsule .cap-acct[data-tier="mid"]  { --g1: #fbbf24; --g2: #f97316; }
-#panel .pane[data-tier="high"], #capsule .cap-acct[data-tier="high"] { --g1: #f87171; --g2: #ef4444; }
+#panel .pane[data-tier="low"],  #capsule .cap-acct[data-tier="low"], #flyout .pane[data-tier="low"]{ --g1: #22d3ee; --g2: #8b5cf6; }
+#panel .pane[data-tier="mid"],  #capsule .cap-acct[data-tier="mid"], #flyout .pane[data-tier="mid"]{ --g1: #fbbf24; --g2: #f97316; }
+#panel .pane[data-tier="high"], #capsule .cap-acct[data-tier="high"], #flyout .pane[data-tier="high"]{ --g1: #f87171; --g2: #ef4444; }
 
 /* ============ 浅色玻璃（背景为浅色时自动/手动切换） ============ */
 body.theme-light { --g1: #4f7dff; --g2: #8b5cf6; --ink: #262b38; --ink2: #4a5164; --ink3: #7a8194; }
 body.theme-light[data-tier="mid"]  { --g1: #e8a13a; --g2: #f97316; }
 body.theme-light[data-tier="high"] { --g1: #e05252; --g2: #ef4444; }
-body.theme-light #panel .pane[data-tier="low"],  body.theme-light #capsule .cap-acct[data-tier="low"]  { --g1: #4f7dff; --g2: #8b5cf6; }
-body.theme-light #panel .pane[data-tier="mid"],  body.theme-light #capsule .cap-acct[data-tier="mid"]  { --g1: #e8a13a; --g2: #f97316; }
-body.theme-light #panel .pane[data-tier="high"], body.theme-light #capsule .cap-acct[data-tier="high"] { --g1: #e05252; --g2: #ef4444; }
+body.theme-light #panel .pane[data-tier="low"],  body.theme-light #capsule .cap-acct[data-tier="low"], body.theme-light #flyout .pane[data-tier="low"]{ --g1: #4f7dff; --g2: #8b5cf6; }
+body.theme-light #panel .pane[data-tier="mid"],  body.theme-light #capsule .cap-acct[data-tier="mid"], body.theme-light #flyout .pane[data-tier="mid"]{ --g1: #e8a13a; --g2: #f97316; }
+body.theme-light #panel .pane[data-tier="high"], body.theme-light #capsule .cap-acct[data-tier="high"], body.theme-light #flyout .pane[data-tier="high"]{ --g1: #e05252; --g2: #ef4444; }
 body.theme-light .glass {
   background:
     url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='140' height='140' filter='url(%23n)' opacity='0.06'/%3E%3C/svg%3E"),
@@ -42,7 +42,7 @@ body.theme-light .glass {
 }
 body.theme-light #capsule .bar { background: rgba(23, 28, 45, .12); }
 body.theme-light #panel .phead { border-bottom-color: rgba(23, 28, 45, .14); }
-body.theme-light #panel .pbar { background: rgba(23, 28, 45, .12); }
+body.theme-light #panel .pbar, body.theme-light #flyout .pbar{ background: rgba(23, 28, 45, .12); }
 body.theme-light #panel .banner {
   color: #8a5a00;
   background: rgba(252, 211, 77, .55); border-color: rgba(180, 130, 10, .35);
@@ -282,8 +282,32 @@ body.theme-light #dock .dc-badge { color: #fff; background: #d97706; box-shadow:
 #dock .dc-empty .dc-gear { opacity: .85; }
 #dock .dc-empty:hover { border-color: var(--ink3); color: var(--ink2); }
 
+/* ============ 飞出卡片（F）：贴边悬停圆圈的详情窗 ============
+   ?flyout=1 时整窗只画这一张卡片：头部一行（logo + 账户名 + 口径百分比）+ 该账户的 pane。
+   pane 的样式与面板共用同一套（本文件所有 `#panel …` 的规则都放宽成了 `#panel …, #flyout …`，
+   面板那一侧一字未动），这里只补卡片自己的骨架与头部。
+   窗口 = 卡片 + 2×12 阴影走廊（与主窗的 PAD 同口径），位置由主进程钉在 dock 内侧。 */
+body.view-flyout #flyout { display: flex; }
+#flyout {
+  width: 326px;            /* 与面板卡片同宽（主进程 SIZES.panel.w） */
+  height: max-content;     /* 高度由内容定：渲染层实测后上报给主进程摆窗口 */
+}
+#flyout .fx-head {
+  display: flex; align-items: center; gap: 7px;
+  font-size: 12px; color: var(--ink3);
+  /* 与面板页头同款：下边距 12px + 发丝线，pane 的第一行因此与面板里离页头的距离一致 */
+  padding-bottom: 12px; border-bottom: 1px solid var(--hairline);
+}
+#flyout .fx-head[hidden] { display: none; }   /* [hidden] 会被上面的 display:flex 覆盖，必须显式压回 */
+#flyout .fx-logo { display: flex; flex: none; color: var(--ink2); }
+#flyout .fx-logo svg { display: block; width: 14px; height: 14px; }
+#flyout .fx-title {
+  min-width: 0; color: var(--ink3);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
 /* ============ 面板（B） ============ */
-#panel { flex-direction: column; padding: 16px 18px 16px; border-radius: 16px; position: relative; }
+#panel, #flyout{ flex-direction: column; padding: 16px 18px 16px; border-radius: 16px; position: relative; }
 #panel .phead {
   display: flex; align-items: center; gap: 6px;   /* 三家页签 + 时间 + 两个按钮正好塞进 288px */
   font-size: 12px; color: var(--ink3);
@@ -302,120 +326,120 @@ body.theme-light #dock .dc-badge { color: #fff; background: #d97706; box-shadow:
 
 /* 12px 与页头下边距（phead 的 padding-bottom）对称；DS 页签的 .pane-ds 也是 12px ——
    两个页签的第一行（大百分比 / 总余额）离上方距离必须一致 */
-#panel .blk { padding: 12px 0 4px; }
-#panel .row { display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 7px; }
-#panel .pct { display: flex; align-items: baseline; }
-#panel .pct b {
+#panel .blk, #flyout .blk{ padding: 12px 0 4px; }
+#panel .row, #flyout .row{ display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 7px; }
+#panel .pct, #flyout .pct{ display: flex; align-items: baseline; }
+#panel .pct b, #flyout .pct b{
   font-size: 32px; font-weight: 700; line-height: 1;
   background: linear-gradient(120deg, var(--g1), var(--g2));
   -webkit-background-clip: text; background-clip: text; color: transparent;
 }
-#panel .pct i { font-size: 13px; font-style: normal; color: var(--ink3); margin-left: 2px; }
-#panel .sub { font-size: 11px; color: var(--ink3); margin-top: 6px; white-space: nowrap; }
-#panel .sub span { color: var(--ink2); }
-#panel .pts { font-size: 11px; color: var(--ink3); text-align: right; line-height: 1.5; }
-#panel .pts b { font-size: 13px; color: var(--ink2); font-weight: 600; }
-#panel .pts .rt5, #panel .pts .rtw { font-size: 10px; }
-#panel .pbar {
+#panel .pct i, #flyout .pct i{ font-size: 13px; font-style: normal; color: var(--ink3); margin-left: 2px; }
+#panel .sub, #flyout .sub{ font-size: 11px; color: var(--ink3); margin-top: 6px; white-space: nowrap; }
+#panel .sub span, #flyout .sub span{ color: var(--ink2); }
+#panel .pts, #flyout .pts{ font-size: 11px; color: var(--ink3); text-align: right; line-height: 1.5; }
+#panel .pts b, #flyout .pts b{ font-size: 13px; color: var(--ink2); font-weight: 600; }
+#panel .pts .rt5, #panel .pts .rtw, #flyout .pts .rt5, #flyout .pts .rtw{ font-size: 10px; }
+#panel .pbar, #flyout .pbar{
   position: relative;
   height: 8px; border-radius: 99px;
   background: rgba(255, 255, 255, .08); overflow: visible;
 }
-#panel .pbar i {
+#panel .pbar i, #flyout .pbar i{
   display: block; height: 100%; border-radius: 99px; position: relative;
   overflow: hidden; /* 扫光只允许出现在彩色填充段内，不越过数值边界 */
   background: linear-gradient(90deg, var(--g1), var(--g2));
   box-shadow: 0 0 14px color-mix(in srgb, var(--g1) 65%, transparent);
   transition: width .35s;
 }
-#panel .pbar i::after {
+#panel .pbar i::after, #flyout .pbar i::after{
   content: ""; position: absolute; inset: 0;
   background: linear-gradient(105deg, transparent 30%, rgba(255, 255, 255, .35) 50%, transparent 70%);
   transform: translateX(-100%); animation: sheen 6s ease-in-out infinite;
 }
 /* 45% 的时间扫完（≈2.7s），其余 ≈3.3s 静置；整体 6s 一轮 */
 @keyframes sheen { 45%, 100% { transform: translateX(100%); } }
-#panel .pbar i.f5 { width: calc(var(--p5, 0) * 1%); }
-#panel .pbar i.fw { width: calc(var(--pw, 0) * 1%); }
-#panel .pbar i.fm { width: calc(var(--pm, 0) * 1%); }
+#panel .pbar i.f5, #flyout .pbar i.f5{ width: calc(var(--p5, 0) * 1%); }
+#panel .pbar i.fw, #flyout .pbar i.fw{ width: calc(var(--pw, 0) * 1%); }
+#panel .pbar i.fm, #flyout .pbar i.fm{ width: calc(var(--pm, 0) * 1%); }
 
 /* ============ 预期进度（方案 D）：幽灵斜纹段 + 前沿亮线 ============
    --pace5/--paceW = 按时间均摊，此刻应已用的百分比（每秒随倒计时更新）；
    变量挂在 pane / 胶囊列自己的根节点上（scoped，多实例互不串数）
    亮线带光晕+描边，领先时立在空轨上、超支时压在渐变填充上，双主题均清晰 */
-#panel .pbar .ghost, #capsule .bar .ghost {
+#panel .pbar .ghost, #capsule .bar .ghost, #flyout .pbar .ghost{
   position: absolute; inset: 0 auto 0 0; border-radius: 99px; z-index: 0;
 }
-#panel .pbar .ghost {
+#panel .pbar .ghost, #flyout .pbar .ghost{
   background: repeating-linear-gradient(135deg, rgba(148, 163, 255, .26) 0 4px, rgba(148, 163, 255, .06) 4px 9px);
 }
-#panel .pbar .ghost.g5 { width: calc(var(--pace5, 0) * 1%); }
-#panel .pbar .ghost.gW { width: calc(var(--paceW, 0) * 1%); }
-#panel .pbar .ghost.gM { width: calc(var(--paceM, 0) * 1%); }
-#panel .pbar i { position: relative; z-index: 1; }
+#panel .pbar .ghost.g5, #flyout .pbar .ghost.g5{ width: calc(var(--pace5, 0) * 1%); }
+#panel .pbar .ghost.gW, #flyout .pbar .ghost.gW{ width: calc(var(--paceW, 0) * 1%); }
+#panel .pbar .ghost.gM, #flyout .pbar .ghost.gM{ width: calc(var(--paceM, 0) * 1%); }
+#panel .pbar i, #flyout .pbar i{ position: relative; z-index: 1; }
 
-#panel .pbar .edge, #capsule .bar .edge {
+#panel .pbar .edge, #capsule .bar .edge, #flyout .pbar .edge{
   position: absolute; top: -3px; bottom: -3px; width: 2px; z-index: 2;
   transform: translateX(-1px); border-radius: 2px;
   background: #fff;
   box-shadow: 0 0 4px rgba(255, 255, 255, .9), 0 0 0 1px rgba(8, 10, 16, .5);
 }
-#panel .pbar .edge.e5, #capsule .bar .edge.e5 { left: calc(var(--pace5, 0) * 1%); }
-#panel .pbar .edge.eW, #capsule .bar .edge.eW { left: calc(var(--paceW, 0) * 1%); }
-#panel .pbar .edge.eM, #capsule .bar .edge.eM { left: calc(var(--paceM, 0) * 1%); }
+#panel .pbar .edge.e5, #capsule .bar .edge.e5, #flyout .pbar .edge.e5{ left: calc(var(--pace5, 0) * 1%); }
+#panel .pbar .edge.eW, #capsule .bar .edge.eW, #flyout .pbar .edge.eW{ left: calc(var(--paceW, 0) * 1%); }
+#panel .pbar .edge.eM, #capsule .bar .edge.eM, #flyout .pbar .edge.eM{ left: calc(var(--paceM, 0) * 1%); }
 
 /* ============ 超预期提醒（需求 2）============
    --over5/--overW = max(0, 实际% − 预期%)，由渲染层每秒算；该窗口没超支时就是 0 宽。
    红橙段直接画在「预期位置 → 实际位置」之间：一眼看出超出了多少，而不是只知道「超了」。
    data-pace 挂在 pane / 胶囊列根节点上（GLM 视图自己的状态，不牵连别家）。 */
-#panel .pbar .ovr, #capsule .bar .ovr {
+#panel .pbar .ovr, #capsule .bar .ovr, #flyout .pbar .ovr{
   position: absolute; top: 0; bottom: 0; z-index: 2; border-radius: 99px;
   background: linear-gradient(90deg, rgba(251, 146, 60, .6), rgba(248, 113, 113, .95));
   box-shadow: 0 0 7px rgba(248, 113, 113, .55);
   opacity: 0; transition: opacity .25s, width .35s;
 }
-#panel .pbar .ovr.o5, #capsule .bar .ovr.o5 { left: calc(var(--pace5, 0) * 1%); width: calc(var(--over5, 0) * 1%); }
-#panel .pbar .ovr.oW, #capsule .bar .ovr.oW { left: calc(var(--paceW, 0) * 1%); width: calc(var(--overW, 0) * 1%); }
-#panel .pbar .ovr.oM, #capsule .bar .ovr.oM { left: calc(var(--paceM, 0) * 1%); width: calc(var(--overM, 0) * 1%); }
+#panel .pbar .ovr.o5, #capsule .bar .ovr.o5, #flyout .pbar .ovr.o5{ left: calc(var(--pace5, 0) * 1%); width: calc(var(--over5, 0) * 1%); }
+#panel .pbar .ovr.oW, #capsule .bar .ovr.oW, #flyout .pbar .ovr.oW{ left: calc(var(--paceW, 0) * 1%); width: calc(var(--overW, 0) * 1%); }
+#panel .pbar .ovr.oM, #capsule .bar .ovr.oM, #flyout .pbar .ovr.oM{ left: calc(var(--paceM, 0) * 1%); width: calc(var(--overM, 0) * 1%); }
 #panel .pane[data-pace="over"] .pbar .ovr,
-#capsule .cap-acct[data-pace="over"] .bar .ovr { opacity: 1; }
+#capsule .cap-acct[data-pace="over"] .bar .ovr, #flyout .pane[data-pace="over"] .pbar .ovr{ opacity: 1; }
 
 /* 超预期时的配色：只在低档位改色，不与「到阈值变琥珀 / 变红」抢语义（档位见文件开头） */
 #panel .pane[data-tier="low"][data-pace="over"],
-#capsule .cap-acct[data-tier="low"][data-pace="over"] { --g1: #fbbf24; --g2: #f97316; }
+#capsule .cap-acct[data-tier="low"][data-pace="over"], #flyout .pane[data-tier="low"][data-pace="over"]{ --g1: #fbbf24; --g2: #f97316; }
 body.theme-light #panel .pane[data-tier="low"][data-pace="over"],
-body.theme-light #capsule .cap-acct[data-tier="low"][data-pace="over"] { --g1: #e8a13a; --g2: #f97316; }
+body.theme-light #capsule .cap-acct[data-tier="low"][data-pace="over"], body.theme-light #flyout .pane[data-tier="low"][data-pace="over"]{ --g1: #e8a13a; --g2: #f97316; }
 #panel .pane[data-pace="over"] .pbar .edge,
-#capsule .cap-acct[data-pace="over"] .bar .edge {
+#capsule .cap-acct[data-pace="over"] .bar .edge, #flyout .pane[data-pace="over"] .pbar .edge{
   background: #fbbf24;
   box-shadow: 0 0 5px rgba(251, 191, 36, .95), 0 0 0 1px rgba(8, 10, 16, .5);
 }
 body.theme-light #panel .pane[data-pace="over"] .pbar .edge,
-body.theme-light #capsule .cap-acct[data-pace="over"] .bar .edge {
+body.theme-light #capsule .cap-acct[data-pace="over"] .bar .edge, body.theme-light #flyout .pane[data-pace="over"] .pbar .edge{
   background: #d97706;
   box-shadow: 0 0 5px rgba(255, 255, 255, .95), 0 0 0 1px rgba(255, 255, 255, .8);
 }
 
 /* 面板大数字旁的「超预期」小标签：逐窗口显示（只有超支的那个窗口才挂 over） */
-#panel .pct .overchip {
+#panel .pct .overchip, #flyout .pct .overchip{
   display: none; align-self: center; margin-left: 7px;
   padding: 1px 6px 2px; border-radius: 99px; font-size: 10px; line-height: 1.5;
   color: #fdba74; background: rgba(249, 115, 22, .16); border: 1px solid rgba(249, 115, 22, .42);
 }
-#panel .blk.over .overchip { display: inline-block; }
-body.theme-light #panel .pct .overchip { color: #b45309; background: rgba(249, 115, 22, .12); border-color: rgba(180, 83, 9, .35); }
-#panel .blk-note { padding: 3px 0 0; font-size: 10.5px; color: var(--ink3); line-height: 1.5; display: flex; align-items: center; gap: 8px; }
-#panel .blk-note .notetxt { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-#panel .blk-note .overtxt { color: #fdba74; }
-body.theme-light #panel .blk-note .overtxt { color: #b45309; }
-#panel .pane:not([data-pace="over"]) .blk-note .overtxt { display: none; }
+#panel .blk.over .overchip, #flyout .blk.over .overchip{ display: inline-block; }
+body.theme-light #panel .pct .overchip, body.theme-light #flyout .pct .overchip{ color: #b45309; background: rgba(249, 115, 22, .12); border-color: rgba(180, 83, 9, .35); }
+#panel .blk-note, #flyout .blk-note{ padding: 3px 0 0; font-size: 10.5px; color: var(--ink3); line-height: 1.5; display: flex; align-items: center; gap: 8px; }
+#panel .blk-note .notetxt, #flyout .blk-note .notetxt{ min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#panel .blk-note .overtxt, #flyout .blk-note .overtxt{ color: #fdba74; }
+body.theme-light #panel .blk-note .overtxt, body.theme-light #flyout .blk-note .overtxt{ color: #b45309; }
+#panel .pane:not([data-pace="over"]) .blk-note .overtxt, #flyout .pane:not([data-pace="over"]) .blk-note .overtxt{ display: none; }
 
 /* 火山脚注要放「套餐名 + 两种都订了/另一种查询失败」的提示，用 flex 排。
    这样 .overtxt 被 display:none 时既不占位、也不留下串场的分隔符。 */
-#panel .pane-volc .blk-note .notetxt { display: flex; align-items: center; gap: 6px; }
-#panel .pane-volc .blk-note .hint { color: #fdba74; cursor: help; }
-body.theme-light #panel .pane-volc .blk-note .hint { color: #b45309; }
-#panel .pane-volc .pts .rt { font-size: 10px; }
+#panel .pane-volc .blk-note .notetxt, #flyout .pane-volc .blk-note .notetxt{ display: flex; align-items: center; gap: 6px; }
+#panel .pane-volc .blk-note .hint, #flyout .pane-volc .blk-note .hint{ color: #fdba74; cursor: help; }
+body.theme-light #panel .pane-volc .blk-note .hint, body.theme-light #flyout .pane-volc .blk-note .hint{ color: #b45309; }
+#panel .pane-volc .pts .rt, #flyout .pane-volc .pts .rt{ font-size: 10px; }
 
 /* 胶囊 mini bar 版本：更细的斜纹与亮线 */
 #capsule .bar { position: relative; overflow: visible; }
@@ -428,19 +452,19 @@ body.theme-light #panel .pane-volc .blk-note .hint { color: #b45309; }
 #capsule .bar .edge { top: -2px; bottom: -2px; width: 1px; transform: none; }
 
 /* 浅色主题下的幽灵与亮线 */
-body.theme-light #panel .pbar .ghost {
+body.theme-light #panel .pbar .ghost, body.theme-light #flyout .pbar .ghost{
   background: repeating-linear-gradient(135deg, rgba(79, 125, 255, .30) 0 4px, rgba(79, 125, 255, .08) 4px 9px);
 }
 body.theme-light #capsule .bar .ghost {
   background: repeating-linear-gradient(135deg, rgba(79, 125, 255, .32) 0 2px, rgba(79, 125, 255, .08) 2px 5px);
 }
-body.theme-light #panel .pbar .edge, body.theme-light #capsule .bar .edge {
+body.theme-light #panel .pbar .edge, body.theme-light #capsule .bar .edge, body.theme-light #flyout .pbar .edge{
   background: #262b38;
   box-shadow: 0 0 4px rgba(255, 255, 255, .9), 0 0 0 1px rgba(255, 255, 255, .75);
 }
 
 /* 幽灵段悬停解释 */
-#panel .ptip {
+#panel .ptip, #flyout .ptip{
   position: absolute; bottom: calc(100% + 9px); z-index: 10;
   transform: translateX(-50%);
   padding: 6px 10px; border-radius: 8px; white-space: nowrap;
@@ -448,12 +472,12 @@ body.theme-light #panel .pbar .edge, body.theme-light #capsule .bar .edge {
   color: var(--ink); font-size: 11px; line-height: 1.55;
   opacity: 0; pointer-events: none; transition: opacity .15s;
 }
-#panel .ptip.show { opacity: 1; }
-#panel .ptip small { display: block; color: #8b93a7; font-size: 10px; }
-body.theme-light #panel .ptip {
+#panel .ptip.show, #flyout .ptip.show{ opacity: 1; }
+#panel .ptip small, #flyout .ptip small{ display: block; color: #8b93a7; font-size: 10px; }
+body.theme-light #panel .ptip, body.theme-light #flyout .ptip{
   background: rgba(255, 255, 255, .96); border-color: rgba(23, 28, 45, .16);
 }
-body.theme-light #panel .ptip small { color: #7a8194; }
+body.theme-light #panel .ptip small, body.theme-light #flyout .ptip small{ color: #7a8194; }
 
 /* 缩放提示（Ctrl+滚轮） */
 #zoomTip {
@@ -476,7 +500,7 @@ body.theme-light #panel .ptip small { color: #7a8194; }
 /* 横幅按「当前页签对应的 provider」状态显示，各 provider 互不干扰 */
 body.bn-expired #panel .banner-expired,
 body.bn-retry   #panel .banner-retry { display: flex; }
-#panel .pane.acc-expired .blk { opacity: .45; }
+#panel .pane.acc-expired .blk, #flyout .pane.acc-expired .blk{ opacity: .45; }
 
 /* ============ 峰谷时段徽标 ============
    只报「高峰 / 空闲」，配色刻意压得很低（低饱和 + 低透明度 + 不加动效），
@@ -494,8 +518,8 @@ body.bn-retry   #panel .banner-retry { display: flex; }
 body.theme-light .chip.off  { color: #2f8a63; background: rgba(16, 152, 106, .07); border-color: rgba(16, 152, 106, .20); }
 body.theme-light .chip.peak { color: #986716; background: rgba(200, 130, 10, .07); border-color: rgba(200, 130, 10, .22); }
 body.theme-light .chip.none { background: rgba(23, 28, 45, .04); }
-#panel .ds-foot .chip { margin-left: 0; }
-#panel .ds-foot .dsright { margin-left: auto; }
+#panel .ds-foot .chip, #flyout .ds-foot .chip{ margin-left: 0; }
+#panel .ds-foot .dsright, #flyout .ds-foot .dsright{ margin-left: auto; }
 
 /* ============ 面板页签（GLM / DeepSeek） ============ */
 /* 页签组可压缩（min-width:0 + flex-shrink）：加到第三家时它会把「10:28 更新」和两个按钮
@@ -525,13 +549,13 @@ body.theme-light #panel .tab.on { background: rgba(255, 255, 255, .9); color: #2
    照样参与）。早先"临时把页签挪到屏幕外量高度"的做法改过 DOM，会把页签永久留在脱流隐藏状态 ——
    只剩页头按钮、下面一片空白。 */
 #panel #panes { flex: none; display: grid; grid-template-columns: 1fr; grid-auto-rows: auto; min-height: 0; position: relative; }
-#panel .pane { grid-area: 1 / 1; display: flex; flex-direction: column; visibility: hidden; }
-#panel .pane.on { visibility: visible; }
+#panel .pane, #flyout .pane{ grid-area: 1 / 1; display: flex; flex-direction: column; visibility: hidden; }
+#panel .pane.on, #flyout .pane.on{ visibility: visible; }
 /* 火山那页比 GLM / DeepSeek 高一截（多一个「月」块）：绝对定位让它**跳出**上面那套「取最高」，
    否则另外两家会被顶高 82px（内容只占一半、下面全是空白）。它自己多高就多高 —— 格子量不到它，
    所以当前页签是它时，app.js 的 panesHeight() 会把它单独算进来。 */
 #panel .pane-solo { position: absolute; left: 0; right: 0; top: 0; }
-#panel .pane-glm .blk-note { margin-top: auto; }
+#panel .pane-glm .blk-note, #flyout .pane-glm .blk-note{ margin-top: auto; }
 
 /* ============ 账户 chips 行 ============
    某家配了多个账户才出现（行高恒定，切页签窗口零位移）；单账户用户永远看不到它 */
@@ -558,86 +582,86 @@ body.theme-light #panel .acc-chip.on { background: rgba(255, 255, 255, .9); colo
 /* ============ DeepSeek 视图 ============
    强调色由渲染层按 meta.accent 注入（fixed 型 provider 自成一套）：
    GLM 的档位/超预期配色不该染到 DeepSeek 视图上（两家的「水位」无关） */
-#panel .pane-ds { padding-top: 12px; }   /* 与 GLM 的 .blk padding-top 对齐（见上） */
-#panel .ds-headwrap { position: relative; }
-#panel .ds-top { display: flex; align-items: baseline; gap: 8px; }
-#panel .ds-bal { display: flex; align-items: baseline; cursor: pointer; flex: none; border-radius: 6px; }
-#panel .ds-bal:hover .eye { opacity: .75; }
-#panel .ds-bal .eye { margin-left: 6px; font-size: 11px; opacity: .32; align-self: center; transition: opacity .15s; }
-#panel .pane-ds.ds-masked .ds-bal b {
+#panel .pane-ds, #flyout .pane-ds{ padding-top: 12px; }   /* 与 GLM 的 .blk padding-top 对齐（见上） */
+#panel .ds-headwrap, #flyout .ds-headwrap{ position: relative; }
+#panel .ds-top, #flyout .ds-top{ display: flex; align-items: baseline; gap: 8px; }
+#panel .ds-bal, #flyout .ds-bal{ display: flex; align-items: baseline; cursor: pointer; flex: none; border-radius: 6px; }
+#panel .ds-bal:hover .eye, #flyout .ds-bal:hover .eye{ opacity: .75; }
+#panel .ds-bal .eye, #flyout .ds-bal .eye{ margin-left: 6px; font-size: 11px; opacity: .32; align-self: center; transition: opacity .15s; }
+#panel .pane-ds.ds-masked .ds-bal b, #flyout .pane-ds.ds-masked .ds-bal b{
   letter-spacing: 2px;
   background: none; -webkit-text-fill-color: var(--ink3); color: var(--ink3);
 }
 
-#panel .ds-bal .cur { font-size: 15px; font-style: normal; color: var(--ink3); margin-right: 1px; }
-#panel .ds-bal b {
+#panel .ds-bal .cur, #flyout .ds-bal .cur{ font-size: 15px; font-style: normal; color: var(--ink3); margin-right: 1px; }
+#panel .ds-bal b, #flyout .ds-bal b{
   font-size: 26px; font-weight: 700; line-height: 1;
   background: linear-gradient(120deg, var(--g1), var(--g2));
   -webkit-background-clip: text; background-clip: text; color: transparent;
 }
-#panel .ds-sub { font-size: 10.5px; color: var(--ink3); text-align: right; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-left: auto; }
-#panel .ds-sub .warn { color: #fbbf24; }
-#panel .ds-sub a { color: #6ba0ff; cursor: pointer; text-decoration: none; }
+#panel .ds-sub, #flyout .ds-sub{ font-size: 10.5px; color: var(--ink3); text-align: right; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-left: auto; }
+#panel .ds-sub .warn, #flyout .ds-sub .warn{ color: #fbbf24; }
+#panel .ds-sub a, #flyout .ds-sub a{ color: #6ba0ff; cursor: pointer; text-decoration: none; }
 
-#panel .ds-stats { display: flex; gap: 7px; margin-top: 9px; }
-#panel .ds-stats > div {
+#panel .ds-stats, #flyout .ds-stats{ display: flex; gap: 7px; margin-top: 9px; }
+#panel .ds-stats > div, #flyout .ds-stats > div{
   flex: 1; display: flex; flex-direction: column; gap: 0;
   padding: 5px 8px 6px; border-radius: 8px;
   background: rgba(255, 255, 255, .05); border: 1px solid var(--hairline);
 }
-#panel .ds-stats span { font-size: 10.5px; color: var(--ink3); }
-#panel .ds-stats b { font-size: 13.5px; font-weight: 650; }
-body.theme-light #panel .ds-stats > div { background: rgba(23, 28, 45, .04); }
+#panel .ds-stats span, #flyout .ds-stats span{ font-size: 10.5px; color: var(--ink3); }
+#panel .ds-stats b, #flyout .ds-stats b{ font-size: 13.5px; font-weight: 650; }
+body.theme-light #panel .ds-stats > div, body.theme-light #flyout .ds-stats > div{ background: rgba(23, 28, 45, .04); }
 
-#panel .ds-chart-head { display: flex; align-items: center; gap: 6px; margin: 10px 0 6px; }
-#panel .ds-range { font-size: 11px; color: var(--ink3); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-#panel .ds-chart-head .seg { flex: none; }
-#panel .qbtn {
+#panel .ds-chart-head, #flyout .ds-chart-head{ display: flex; align-items: center; gap: 6px; margin: 10px 0 6px; }
+#panel .ds-range, #flyout .ds-range{ font-size: 11px; color: var(--ink3); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#panel .ds-chart-head .seg, #flyout .ds-chart-head .seg{ flex: none; }
+#panel .qbtn, #flyout .qbtn{
   width: 15px; height: 15px; line-height: 14px; text-align: center; flex: none;
   border-radius: 50%; font-size: 10px; font-weight: 600;
   color: var(--ink3); border: 1px solid var(--hairline); background: rgba(255, 255, 255, .05);
 }
-#panel .qbtn:hover { color: var(--ink); background: rgba(255, 255, 255, .12); }
-#panel .qbtn.on { color: var(--ink); background: rgba(255, 255, 255, .16); }
-#panel .seg { display: flex; gap: 2px; margin-left: auto; padding: 2px; border-radius: 7px; background: rgba(255, 255, 255, .07); }
-#panel .segb { font-size: 10.5px; color: var(--ink3); padding: 1px 7px 2px; border-radius: 5px; }
-#panel .segb.on { color: var(--ink); font-weight: 600; background: rgba(255, 255, 255, .11); }
-body.theme-light #panel .seg { background: rgba(23, 28, 45, .07); }
-body.theme-light #panel .qbtn { background: rgba(23, 28, 45, .05); }
-body.theme-light #panel .segb.on { background: rgba(255, 255, 255, .9); color: #262b38; }
+#panel .qbtn:hover, #flyout .qbtn:hover{ color: var(--ink); background: rgba(255, 255, 255, .12); }
+#panel .qbtn.on, #flyout .qbtn.on{ color: var(--ink); background: rgba(255, 255, 255, .16); }
+#panel .seg, #flyout .seg{ display: flex; gap: 2px; margin-left: auto; padding: 2px; border-radius: 7px; background: rgba(255, 255, 255, .07); }
+#panel .segb, #flyout .segb{ font-size: 10.5px; color: var(--ink3); padding: 1px 7px 2px; border-radius: 5px; }
+#panel .segb.on, #flyout .segb.on{ color: var(--ink); font-weight: 600; background: rgba(255, 255, 255, .11); }
+body.theme-light #panel .seg, body.theme-light #flyout .seg{ background: rgba(23, 28, 45, .07); }
+body.theme-light #panel .qbtn, body.theme-light #flyout .qbtn{ background: rgba(23, 28, 45, .05); }
+body.theme-light #panel .segb.on, body.theme-light #flyout .segb.on{ background: rgba(255, 255, 255, .9); color: #262b38; }
 
-#panel .ds-chart { position: relative; display: flex; align-items: flex-end; gap: 3px; height: 40px; }
+#panel .ds-chart, #flyout .ds-chart{ position: relative; display: flex; align-items: flex-end; gap: 3px; height: 40px; }
 /* 柱子的悬停气泡：与 GLM 的 .ptip 同一套语言，位置由 JS 按柱子中线钳制（左右都不出窗） */
-#panel .dstrip {
+#panel .dstrip, #flyout .dstrip{
   position: absolute; bottom: calc(100% + 7px); z-index: 10; transform: translateX(-50%);
   padding: 4px 9px 5px; border-radius: 8px; white-space: nowrap;
   background: rgba(12, 14, 20, .95); border: 1px solid rgba(255, 255, 255, .14);
   color: var(--ink); font-size: 11px; line-height: 1.5; font-variant-numeric: tabular-nums;
   opacity: 0; pointer-events: none; transition: opacity .15s;
 }
-#panel .dstrip.show { opacity: 1; }
+#panel .dstrip.show, #flyout .dstrip.show{ opacity: 1; }
 /* 气泡里的文字一律沿用浮窗默认色（与 GLM 的进度条气泡一致）：不加底色、不加粗、不单独上色 */
-#panel .dstrip b, #panel .dstrip i { color: inherit; font-weight: inherit; font-style: normal; }
-body.theme-light #panel .dstrip { background: rgba(255, 255, 255, .97); border-color: rgba(23, 28, 45, .16); }
+#panel .dstrip b, #panel .dstrip i, #flyout .dstrip b, #flyout .dstrip i{ color: inherit; font-weight: inherit; font-style: normal; }
+body.theme-light #panel .dstrip, body.theme-light #flyout .dstrip{ background: rgba(255, 255, 255, .97); border-color: rgba(23, 28, 45, .16); }
 
 /* 只选直接子元素：气泡 #dsTip 也在 .ds-chart 里，用后代选择器会把气泡里的 <i> 也套上柱子样式 */
-#panel .ds-chart > i {
+#panel .ds-chart > i, #flyout .ds-chart > i{
   flex: 1; min-width: 0; border-radius: 2px 2px 1px 1px;
   background: linear-gradient(180deg, var(--g1), color-mix(in srgb, var(--g2) 70%, transparent));
 }
-#panel .ds-chart > i.zero { background: rgba(255, 255, 255, .10); }
+#panel .ds-chart > i.zero, #flyout .ds-chart > i.zero{ background: rgba(255, 255, 255, .10); }
 /* 进行中的当前小时：斜纹表示「还没盖棺」 */
-#panel .ds-chart > i.partial {
+#panel .ds-chart > i.partial, #flyout .ds-chart > i.partial{
   background: repeating-linear-gradient(135deg, var(--g1) 0 2px, color-mix(in srgb, var(--g2) 60%, transparent) 2px 4px);
 }
-body.theme-light #panel .ds-chart i.zero { background: rgba(23, 28, 45, .12); }
+body.theme-light #panel .ds-chart i.zero, body.theme-light #flyout .ds-chart i.zero{ background: rgba(23, 28, 45, .12); }
 
-#panel .ds-foot .dsright { margin-left: auto; }
-#panel .ds-foot { display: flex; align-items: center; gap: 8px; margin-top: 5px; font-size: 10.5px; color: var(--ink3); white-space: nowrap; }
-#panel .ds-foot .dsleft { flex: 1; }
+#panel .ds-foot .dsright, #flyout .ds-foot .dsright{ margin-left: auto; }
+#panel .ds-foot, #flyout .ds-foot{ display: flex; align-items: center; gap: 8px; margin-top: 5px; font-size: 10.5px; color: var(--ink3); white-space: nowrap; }
+#panel .ds-foot .dsleft, #flyout .ds-foot .dsleft{ flex: 1; }
 /* 锚在「?」那一行的下方往下铺：既不会盖住按钮，也不会把面板撑高。
    内容超出剩余空间时自己滚（面板高度恒定，两个页签切换零位移） */
-#panel .ds-more {
+#panel .ds-more, #flyout .ds-more{
   position: absolute; top: calc(100% + 5px); left: 0; right: 0; z-index: 6;
   max-height: 150px; overflow-y: auto;
   padding: 8px 10px; border-radius: 10px;
@@ -646,14 +670,14 @@ body.theme-light #panel .ds-chart i.zero { background: rgba(23, 28, 45, .12); }
   border: 1px solid rgba(255, 255, 255, .14);
   box-shadow: 0 8px 22px rgba(0, 0, 0, .45);
 }
-body.theme-light #panel .ds-more {
+body.theme-light #panel .ds-more, body.theme-light #flyout .ds-more{
   background: rgba(252, 253, 255, .98); border-color: rgba(23, 28, 45, .16);
 }
-#panel .ds-more b { color: var(--ink2); font-weight: 600; }
-#panel .ds-more a { color: #6ba0ff; cursor: pointer; text-decoration: none; }
-#panel .ds-more a:hover { text-decoration: underline; }
-#panel .ds-more .warn { color: #fbbf24; }
-#panel .ds-more > div + div { margin-top: 2px; }
+#panel .ds-more b, #flyout .ds-more b{ color: var(--ink2); font-weight: 600; }
+#panel .ds-more a, #flyout .ds-more a{ color: #6ba0ff; cursor: pointer; text-decoration: none; }
+#panel .ds-more a:hover, #flyout .ds-more a:hover{ text-decoration: underline; }
+#panel .ds-more .warn, #flyout .ds-more .warn{ color: #fbbf24; }
+#panel .ds-more > div + div, #flyout .ds-more > div + div{ margin-top: 2px; }
 
 .btn {
   border-radius: 9px; padding: 8px 0; font-size: 12.5px; text-align: center;
@@ -834,6 +858,42 @@ body.theme-light #settings .linkrow a { color: #3b6ef6; }
 #settings .guide li { margin: 0; }
 #settings .guide b { color: var(--ink2); font-weight: 600; }
 #settings .guide a { color: #5b8cff; }
+
+/* ---- 贴边圆圈（每个启用账户的圆圈口径；DeepSeek 另配预算金额） ---- */
+#settings .dock-row {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  margin-top: 6px; padding: 6px 9px; border-radius: 9px;
+  background: rgba(255, 255, 255, .04); border: 1px solid var(--hairline);
+}
+body.theme-light #settings .dock-row { background: rgba(23, 28, 45, .03); }
+#settings .dock-row .dlogo { flex: none; width: 16px; height: 16px; color: var(--ink2); }
+#settings .dock-row .dlogo svg { display: block; width: 16px; height: 16px; }
+#settings .dock-row .dname {
+  font-size: 12px; color: var(--ink); font-weight: 600;
+  max-width: 96px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+/* 行里的下拉比通用段窄：它跟账户名 / 金额框挤在同一行（口径长的一家会自己撑开） */
+#settings .dock-row select.dmetric { flex: 1 1 76px; width: auto; min-width: 0; margin-top: 0; padding: 5px 7px; }
+#settings .dock-row .dbudget {
+  flex: none; display: flex; align-items: center; gap: 4px;
+  border-radius: 8px; padding: 0 8px;
+  background: rgba(0, 0, 0, .35); border: 1px solid rgba(255, 255, 255, .12);
+}
+body.theme-light #settings .dock-row .dbudget { background: rgba(255, 255, 255, .6); border-color: rgba(23, 28, 45, .16); }
+#settings .dock-row .dbudget .dcur { font-size: 11.5px; color: var(--ink3); }
+#settings .dock-row .dbudget input {
+  width: 76px; padding: 6px 0; border: 0; background: transparent;
+  color: var(--ink); font-size: 12px; font-family: inherit;
+}
+#settings .dock-row .dbudget input:focus { outline: none; }
+#settings .dock-row .dbudget:focus-within { outline: 1px solid #5b8cff; border-color: #5b8cff; }
+body.theme-light #settings .dock-row .dbudget input { color: #262b38; }
+/* 「未设预算」行内提示：只有 DeepSeek 行有（没有预算时圆圈不显示百分比，说给用户省得猜） */
+#settings .dock-row .dhint {
+  display: none; flex-basis: 100%; margin: 2px 0 0;
+  font-size: 10.5px; color: var(--ink3);
+}
+#settings .dock-row.nobudget .dhint { display: block; }
 
 @media (prefers-reduced-motion: reduce) {
   * { animation: none !important; transition: none !important; }

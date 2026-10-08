@@ -25,6 +25,11 @@ const LOGOS = window.GLMLOGOS;    // 三家 logo 的内联 SVG（renderer/logos.
 const { esc, hhmm } = window.GLMPUI;
 const $ = (s) => document.querySelector(s);
 
+/* 同一个 index.html 两种身份：主窗（胶囊/贴边/面板/设置）与飞出窗（?flyout=1，只有一张卡片）。
+ * 飞出窗是主进程的第二个透明窗口，专门用来画悬停圆圈时的详情卡片 —— 它走自己那套极简渲染，
+ * 绝不碰主窗的视图/尺寸上报（那几条 IPC 都是对着主窗的，发过去会改错窗口）。 */
+const FLYOUT = location.search.includes('flyout=1');
+
 let st = null;
 let lastTrayUrl = '';
 let refreshing = false;
@@ -38,7 +43,7 @@ const widgets = new Map();
 
 /* ---------- GLMPUI 胶水：panes.js / settings.js 回调回编排层 ---------- */
 window.GLMPUI.applyState = (s) => { if (s && s.providers) applyState(s); };
-window.GLMPUI.rerender = () => { if (st) applyState(st); };
+window.GLMPUI.rerender = () => { if (st) applyState(st); };   // 飞出窗里被改指到卡片（见 applyState 的路由）
 window.GLMPUI.invalidateSettings = () => { settingsSig = ''; };
 window.GLMPUI.setRange = (r) => {
   if (st && st.config) st.config.dsRange = r;
@@ -81,11 +86,12 @@ function capsuleTile(s) {
     && providerIds(s).some((pid) => s.providers[pid].accounts.filter((a) => a.enabled !== false).length > 1);
 }
 
-/** pane/capsule 工厂要的上下文 */
-function paneCtx(s, pid, isTab) {
+/** pane/capsule 工厂要的上下文。accOverride 给「要看指定账户」的场合用（飞出卡片），
+ *  显式传（含 null）就照传的来，不传才用当前激活账户 —— 悬停详情绝不能串成激活账户。 */
+function paneCtx(s, pid, isTab, accOverride) {
   const meta = PROV.byId(pid);
   const prov = s.providers[pid];
-  const acc = activeAccOf(s, pid);
+  const acc = accOverride !== undefined ? accOverride : activeAccOf(s, pid);
   return {
     acc,
     accounts: prov ? prov.accounts : [],
@@ -118,6 +124,9 @@ function ensureWidgets(s) {
 }
 
 function applyState(s) {
+  // 飞出窗只有一张卡片：任何走到这里的路径（状态推送 / 胶水回调）都改道到卡片渲染，
+  // 免得跑到主窗那套里去（那会去量胶囊 / 面板尺寸并上报，把另一个窗口弄乱）
+  if (FLYOUT) return applyFlyoutState(s);
   st = s;
   ensureWidgets(s);
   const c = s.config || {};
@@ -344,15 +353,15 @@ function dockCells(s) {
   return out;
 }
 
-/** 圆圈的 tooltip：账户名 · 口径（悬停详情是后续单，这里先用原生 title 兜底） */
-function dockTitle(pid, acc) {
-  const norm = DOCKM.normalize(pid, acc.dock);
-  const list = Object.prototype.hasOwnProperty.call(DOCKM.METRICS, pid) ? DOCKM.METRICS[pid] : null;
-  const item = (norm.metric && list) ? list.find((m) => m.key === norm.metric) : null;
-  return acc.name + (item ? ' · ' + item.label : '');
+/** 圆圈悬停 → 主进程的 dock:hover：cy = 圆心（圆环中心）相对窗口顶部的 CSS px。
+ *  这个视图下 body 无 padding、无滚动，rect 相对视口就是这个窗口的坐标。 */
+function dockHoverPayload(node) {
+  const ring = node.querySelector('.dc-top').getBoundingClientRect();
+  return { accId: node.dataset.accId, cy: Math.round(ring.top + ring.height / 2) };
 }
 
 function dockCellHtml(pid, acc) {
+  // 圆圈上不挂原生 title：悬停详情由飞出卡片承担（两个 tooltip 会同时出现）
   return `<div class="dc" data-pid="${esc(pid)}" data-acc-id="${esc(acc.id)}">`
     + `<div class="dc-top">`
     + `<svg class="dc-ring" viewBox="0 0 40 40" aria-hidden="true">`
@@ -361,7 +370,7 @@ function dockCellHtml(pid, acc) {
     + ` stroke-dasharray="${DOCK_C.toFixed(2)}" stroke-dashoffset="${DOCK_C.toFixed(2)}"></circle>`
     + `</svg>`
     + `<span class="dc-logo" aria-hidden="true">${(LOGOS && LOGOS[pid]) || ''}</span>`
-    + `<i class="dc-badge" title="凭据失效 / 更新失败">!</i>`
+    + `<i class="dc-badge">!</i>`
     + `</div>`
     + `<b class="dc-pct">–</b>`
     + `</div>`;
@@ -383,7 +392,6 @@ function updateDockCell(node, pid, acc) {
   node.classList.toggle('dc-warn', warn);                 // 过期 / 出错：灰环 + 角标
   // 数字讲真话：用未夹的 raw —— DeepSeek 超预算时是 150% 而不是 100%
   node.querySelector('.dc-pct').textContent = p ? Math.round(p.raw) + '%' : '–';
-  node.title = dockTitle(pid, acc);
 }
 
 /** 全停用 / 还没配账户时的空态：一个安静的虚线圆 + ⚙。贴边保留、不清配置 —— 重加账户时
@@ -405,6 +413,11 @@ function renderDock(s) {
     host.querySelectorAll('.dc, .dc-empty').forEach((el) => el.remove());
     host.insertAdjacentHTML('beforeend',
       cells.length ? cells.map(({ pid, acc }) => dockCellHtml(pid, acc)).join('') : dockEmptyHtml());
+    // 悬停圆圈 → 主进程弹出该账户的详情卡片（飞出窗）；节点重建时监听跟着重绑
+    host.querySelectorAll('.dc').forEach((el) => {
+      el.addEventListener('pointerenter', () => { if (api.dockHover) api.dockHover(dockHoverPayload(el)); });
+      el.addEventListener('pointerleave', () => { if (api.dockHover) api.dockHover(null); });
+    });
   }
   const nodes = host.querySelectorAll('.dc');
   cells.forEach(({ pid, acc }, i) => { if (nodes[i]) updateDockCell(nodes[i], pid, acc); });
@@ -465,6 +478,144 @@ function syncDockSize() {
   lastDockSize = sig;
   window.__dockSize = { w, h };        // 供测试读取（仿照 window.__capSize）
   if (api.dockSize) api.dockSize({ w, h });
+}
+
+/* ---------- 飞出卡片（?flyout=1）：贴边悬停圆圈的详情窗 ----------
+   这是主进程第二个透明窗口里的渲染层：整窗只画一张卡片 —— 头部一行（logo + 账户名 +
+   口径与百分比）+ 目标账户的 pane。pane 用 PANES 工厂**新建独立实例**（与主窗面板那份
+   没有关系），样式与面板共用同一套（style.css 里 `#panel …` 的规则都放宽到了 `#flyout …`）。
+   宽度与面板一致（326）；实测尺寸（= 卡片 + 2×阴影走廊）上报给主进程摆窗口。 */
+const FX_PAD = 12;             // 与主窗的 PAD 同口径：窗口 = 卡片 + 2×12
+/** 圆圈口径要用户先填一份预算的家（lib/dock-metric.js 里 budget 只有 DeepSeek 认）。
+ *  没填预算时圆圈是灰的 —— 卡片头部得说清去哪儿补，不然只有一个「–」看不懂。 */
+const BUDGET_METRIC = new Set(['deepseek']);
+
+let fxTarget = null;           // 最近一次 flyout:target 载荷 { pid, accId, side }；null = 无目标
+let fxKey = '';                // 已渲染目标的指纹（pid:accId）；主进程每次悬停都会推，没变就不重画
+let fxReady = false;           // 卡片里有内容（没内容时量出来的尺寸不作数）
+const fxPanes = new Map();     // pid → 飞出窗自己的 pane 实例（缓存，换回来不必重建）
+
+/** 头部一行：GLM · 主号 · 5h 41%（百分比与圆圈同一份算法，数字同样用未夹的 raw 讲真话） */
+function fxTitle(pid, acc, prov) {
+  const norm = DOCKM.normalize(pid, acc.dock);
+  const p = DOCKM.percentOf(pid, acc.data, acc.dock);
+  const list = Object.prototype.hasOwnProperty.call(DOCKM.METRICS, pid) ? DOCKM.METRICS[pid] : null;
+  const item = (norm.metric && list) ? list.find((m) => m.key === norm.metric) : null;
+  const parts = [prov.tab || pid, acc.name];
+  if (p) parts.push(`${item ? item.short : norm.metric} ${Math.round(p.raw)}%`);
+  else if (BUDGET_METRIC.has(pid) && !norm.budget) parts.push('未设预算 · 在设置里填');
+  else parts.push(item ? `${item.short} –` : '–');
+  return parts.join(' · ');
+}
+
+/** 卡片里 pane 的上下文：acc 强制指向悬停的那个账户（不是当前激活账户） */
+function flyoutCtx(s, pid, accId) {
+  const prov = s.providers[pid];
+  const acc = prov ? (prov.accounts.find((a) => a.id === accId) || null) : null;
+  return paneCtx(s, pid, true, acc);
+}
+
+/** 画卡片：头部 + 该账户的 pane。目标没了（账户被删 / 主进程收起）就清空 */
+function renderFlyout(force) {
+  const head = $('#fxHead');
+  const body = $('#fxBody');
+  if (!head || !body) return;
+  const prov = (st && fxTarget) ? st.providers[fxTarget.pid] : null;
+  const acc = prov ? prov.accounts.find((a) => a.id === fxTarget.accId) : null;
+  const ui = acc ? window.PANES[fxTarget.pid] : null;
+  if (!acc || !ui) {
+    // 目标账户没了（被删 / 停用）或这家根本没有界面渲染器：卡片清空，
+    // 并把指纹也清掉 —— 同一个目标再推来时（比如账户又启用了）要能重画
+    fxKey = '';
+    fxReady = false;
+    head.hidden = true;
+    body.replaceChildren();
+    return;
+  }
+  head.hidden = false;
+  head.querySelector('.fx-logo').innerHTML = (LOGOS && LOGOS[fxTarget.pid]) || '';
+  $('#fxTitle').textContent = fxTitle(fxTarget.pid, acc, prov);
+  let inst = fxPanes.get(fxTarget.pid);
+  if (!inst) {
+    inst = ui.pane();
+    inst.el.classList.add('on');   // 卡片里永远展示当前这一个 pane（.pane 默认 visibility:hidden）
+    fxPanes.set(fxTarget.pid, inst);
+  }
+  if (body.firstElementChild !== inst.el) body.replaceChildren(inst.el);
+  const ctx = flyoutCtx(st, fxTarget.pid, fxTarget.accId);
+  inst.update(ctx);
+  if (inst.tick) inst.tick(ctx);
+  fxReady = true;
+  syncFlyoutSize(force);
+}
+
+/** 卡片实测尺寸上报（含 2×FX_PAD 阴影走廊 = 主进程直接用的窗口尺寸）；
+ *  尺寸没变就不重发，目标换了（force）则无条件重发一份 —— 主进程要据此才敢摆位。 */
+let lastFxSize = '';
+function syncFlyoutSize(force) {
+  if (!fxReady || !fxTarget) return;   // 卡片是空的（没目标 / 账户没了）：量出来的尺寸不作数
+  const el = $('#flyout');
+  if (!el) return;
+  const r = el.getBoundingClientRect();
+  if (!r.width || !r.height) return;    // 没布局完时量不到
+  const w = Math.ceil(r.width) + FX_PAD * 2, h = Math.ceil(r.height) + FX_PAD * 2;
+  const sig = w + 'x' + h;
+  if (!force && sig === lastFxSize) return;
+  lastFxSize = sig;
+  // 带上「这份量的是谁」：主进程只把与当前目标配对的尺寸拿来摆位（迟到旧目标的不算）
+  const payload = { w, h, pid: fxTarget.pid, accId: fxTarget.accId };
+  window.__flyoutSize = payload;       // 供测试读取（仿照 window.__dockSize）
+  if (api.flyoutSize) api.flyoutSize(payload);
+}
+
+/** 主进程推来的目标：{ pid, accId, side } 或 null（收起）。目标没变就不重画 */
+function setFlyoutTarget(t) {
+  const next = (t && t.pid && t.accId) ? { pid: t.pid, accId: t.accId, side: t.side || null } : null;
+  const key = next ? next.pid + ':' + next.accId : '';
+  if (key === fxKey) return;
+  fxKey = key;
+  fxTarget = next;
+  renderFlyout(true);   // force：换了目标，尺寸无条件重报一份（主进程据此摆位 / 换位置）
+}
+
+/** 卡片里的倒计时 / 配速每秒照走（飞出窗没有主窗那条 tickPanes，自己跑一份） */
+function flyoutTick() {
+  if (!fxTarget || !st) return;
+  const inst = fxPanes.get(fxTarget.pid);
+  if (inst && inst.tick) inst.tick(flyoutCtx(st, fxTarget.pid, fxTarget.accId));
+}
+
+/** 飞出窗的状态入口：只更新卡片依赖的两样 —— body 的主题类与卡片本身 */
+function applyFlyoutState(s) {
+  if (!s) return;
+  st = s;
+  const b = document.body;
+  b.className = [
+    'view-flyout',
+    s.hasAcrylic ? 'acrylic' : '',
+    s.theme === 'light' ? 'theme-light' : '',
+  ].filter(Boolean).join(' ');
+  b.dataset.tier = s.worstTier || 'low';
+  renderFlyout();
+}
+
+/** 飞出窗的交互：指针进出（主进程据此判断鼠标在路上还是走了）+ 点卡片空白 = 展开完整面板 */
+function bindFlyout() {
+  const card = $('#flyout');
+  card.addEventListener('pointerenter', () => { if (api.flyoutHover) api.flyoutHover(true); });
+  card.addEventListener('pointerleave', () => { if (api.flyoutHover) api.flyoutHover(false); });
+  card.addEventListener('click', (e) => {
+    // 与主窗的点击判定同一套白名单：控件自己处理（点余额、切区间、翻详情），其余都算「点空白」
+    if (e.target.closest('button, a, select, textarea, input, label, summary, .clipchip, .ds-bal, .ds-more, .acc-chip')) return;
+    if (!st || !fxTarget) return;
+    const v = expandTarget();   // 同圆圈的点击行为：该账户失效时直达设置
+    api.setTab(fxTarget.pid);
+    const prov = st.providers[fxTarget.pid];
+    if (prov && prov.activeId !== fxTarget.accId) {
+      api.accActivate({ provider: fxTarget.pid, id: fxTarget.accId });
+    }
+    api.setView(v);             // 主进程收到视图变化会立即收起飞出窗
+  });
 }
 
 /* ---------- 面板尺寸上报 ----------
@@ -872,6 +1023,9 @@ function bind() {
     if (cell) { tapDockCell(cell); return; }
     const v = expandTarget(); setViewLocal(v); api.setView(v);
   });
+  // 按下即算「拖拽开始」（拖动与点击共用同一条手势）：先把悬停目标清掉，
+  // 详情卡片不跟着窗口跑；真点了圆圈的话，主进程也会因展开面板立即收起它
+  $('#dock').addEventListener('pointerdown', () => { if (api.dockHover) api.dockHover(null); });
 
   $('#capsule').addEventListener('contextmenu', (e) => { e.preventDefault(); api.ctxMenu(); });
   $('#capsule').addEventListener('dblclick', (e) => e.preventDefault());
@@ -914,7 +1068,28 @@ function bind() {
 }
 
 /* ---------- 启动 ---------- */
+/** 飞出窗的启动：不 bind 主窗那套（胶囊/面板/设置的手势与滚轮缩放都只属于主窗），
+ *  只订阅状态与悬停目标、画卡片、每秒走 tick */
+async function initFlyout() {
+  // 这几个胶水函数改指到卡片：pane 里的交互（点余额、切区间、去设置）不该跑主窗那套渲染
+  window.GLMPUI.rerender = () => { if (st) applyFlyoutState(st); };
+  window.GLMPUI.setRange = (r) => {
+    if (st && st.config) st.config.dsRange = r;
+    applyFlyoutState(st);   // 乐观先行：不等主进程回包
+    api.save({ dsRange: r });
+  };
+  window.GLMPUIgo = { settings: () => { api.setView('settings'); } };   // 去设置 = 让主窗展开设置页
+  bindFlyout();
+  api.onState(applyState);   // 先订阅再取状态，避免漏掉推送（applyState 会路由到卡片）
+  applyState(await api.getState());
+  if (api.onFlyoutTarget) api.onFlyoutTarget(setFlyoutTarget);
+  api.ready();
+  setInterval(flyoutTick, 1000);
+  console.info('GLM_APP flyout booted');
+}
+
 (async function init() {
+  if (FLYOUT) return initFlyout();
   bind();
   api.onState(applyState); // 先订阅再取状态，避免漏掉推送
   applyState(await api.getState());

@@ -1,5 +1,6 @@
 'use strict';
 /* 设置页的 provider 段落渲染：账户列表 + 添加/编辑表单 + 该家专属的全局控件。
+ * 另有「贴边圆圈」段（不在 #provSecs 里）：每个启用账户的圆圈口径 / DeepSeek 预算（见文末）。
  *
  * 全部由 GLMPROV 元数据驱动：分段标题、凭据输入框（label/占位/指引）、官网链接、
  * 专属控件（配额提醒 / 高频采样）都从 meta 来——新增 provider 时这里零改动。
@@ -10,6 +11,7 @@
 (function () {
   const { esc, build, hhmm, money } = window.GLMPUI;
   const F = window.GLMFMT;
+  const DOCKM = window.GLMDOCK;    // 圆圈口径（lib/dock-metric.js，与主进程同一份规范化逻辑）
 
   const STATE_CLASS = { ok: 'ok', expired: 'bad', error: 'bad', ratelimit: 'bad', empty: 'na', nosub: 'na', loading: 'na', boot: 'na' };
   const STATE_WORD = {
@@ -207,6 +209,7 @@
       parts.push('</div>');
     }
     host.innerHTML = parts.join('');
+    renderDock(st);          // 「贴边圆圈」段：与 provider 段同一结构指纹节拍（行集变了才重建）
     bind(host, st);
     fill(host, st);
     return true;
@@ -339,6 +342,134 @@
       if (sel) sel.value = String(poll > 0 ? poll : 2);
       if (sel) sel.disabled = !(poll > 0);
       if (row) row.classList.toggle('off', !(poll > 0));
+    }
+    fillDock(st);
+  }
+
+  /* ---------- 贴边圆圈段：每个启用账户的圆圈口径（DeepSeek 另配预算当 100%） ----------
+     行不在 #provSecs 里，但跟着它一起走「结构指纹」的节拍：账户集 / 启用状态 / 名字变了才
+     重建（render 末尾收尾），口径与预算的变化只回填（fill 末尾收尾）。余额广播每两分钟就
+     推一次，重建会把用户正在输入的金额清掉、焦点也丢 —— 所以这两个函数必须分开。 */
+
+  /** 段里要列的行：注册表序 → 账户原序，只留启用的（与圆圈列的出场规则一致） */
+  function dockRows(st) {
+    const out = [];
+    for (const meta of window.GLMPROV.list) {
+      for (const acc of st.config.accounts) {
+        if (acc.provider === meta.id && acc.enabled !== false) out.push({ pid: meta.id, acc });
+      }
+    }
+    return out;
+  }
+
+  /** 该家的口径定义；METRICS 里没有的家（防御）→ null */
+  function metricsOf(pid) {
+    return DOCKM && Object.prototype.hasOwnProperty.call(DOCKM.METRICS, pid) ? DOCKM.METRICS[pid] : null;
+  }
+
+  /** 预算框占位：跟着口径走 —— 默认口径（今日）用通用文案，其余把周期写进占位，
+   *  免得「这笔钱算哪一段」说不清 */
+  function budgetPlaceholder(metric) {
+    const list = metricsOf('deepseek') || [];
+    const item = list.find((m) => m.key === metric);
+    return (!item || item.key === (list[0] || {}).key) ? '预算，如 20' : item.label + '预算';
+  }
+
+  /** 一行：logo + 账户名 + 口径下拉；DeepSeek 多一个预算金额框与「未设预算」行内提示 */
+  function dockRowHtml(pid, acc) {
+    const metrics = metricsOf(pid);
+    const cur = DOCKM.normalize(pid, acc.dock);
+    const opts = (metrics || []).map((m) =>
+      `<option value="${esc(m.key)}"${m.key === cur.metric ? ' selected' : ''}>${esc(m.label)}</option>`).join('');
+    const budget = pid === 'deepseek' ? `
+          <label class="dbudget"><span class="dcur" aria-hidden="true">¥</span><input type="text" inputmode="decimal" spellcheck="false" placeholder="${esc(budgetPlaceholder(cur.metric))}" value="${cur.budget == null ? '' : esc(String(cur.budget))}"></label>
+          <p class="dhint">未设预算时圆圈不显示百分比</p>` : '';
+    return `
+        <div class="dock-row${pid === 'deepseek' && cur.budget == null ? ' nobudget' : ''}" data-pid="${esc(pid)}" data-id="${esc(acc.id)}">
+          <span class="dlogo" aria-hidden="true">${(window.GLMLOGOS && window.GLMLOGOS[pid]) || ''}</span>
+          <span class="dname">${esc(acc.name)}</span>
+          ${metrics ? `<select class="dmetric" aria-label="圆圈口径">${opts}</select>` : ''}${budget}
+        </div>`;
+  }
+
+  /** 一行拿到最新状态：口径 / 金额 / 占位 / 未设预算提示。**焦点所在的控件不动**——
+   *  广播来了也不能把正在输入的内容与焦点弄丢 */
+  function syncDockRow(el, pid, acc) {
+    const cur = DOCKM.normalize(pid, acc.dock);
+    const sel = el.querySelector('select.dmetric');
+    if (sel && document.activeElement !== sel) sel.value = cur.metric;
+    const inp = el.querySelector('.dbudget input');
+    if (inp) {
+      if (document.activeElement !== inp) inp.value = cur.budget == null ? '' : String(cur.budget);
+      inp.placeholder = budgetPlaceholder(sel ? sel.value : cur.metric);
+    }
+    el.classList.toggle('nobudget', !!inp && cur.budget == null);
+  }
+
+  /** 重建整段（行集变了才调用）；没有启用账户时整段隐藏 */
+  function renderDock(st) {
+    const host = document.getElementById('dockRows');
+    const sec = document.getElementById('dockSec');
+    if (!host || !sec) return;
+    const rows = dockRows(st);
+    sec.hidden = !rows.length;
+    host.innerHTML = rows.map(({ pid, acc }) => dockRowHtml(pid, acc)).join('');
+    host.querySelectorAll('.dock-row').forEach((el) => {
+      const sel = el.querySelector('select.dmetric');
+      if (sel) sel.addEventListener('change', () => {
+        const inp = el.querySelector('.dbudget input');
+        if (inp) inp.placeholder = budgetPlaceholder(sel.value);   // 立刻换占位，不等主进程回包
+        saveDockRow(el);
+      });
+      // 金额框的 change（失焦 / 回车都会发）也保存；读的是当前下拉，所以改口径不会顺带清预算
+      const inp = el.querySelector('.dbudget input');
+      if (inp) inp.addEventListener('change', () => saveDockRow(el));
+    });
+  }
+
+  /** 回填（不重建）：口径 / 金额 / 占位 / 提示跟着状态走 */
+  function fillDock(st) {
+    const host = document.getElementById('dockRows');
+    const sec = document.getElementById('dockSec');
+    if (!host || !sec) return;
+    const rows = dockRows(st);
+    sec.hidden = !rows.length;
+    const byId = new Map(rows.map((r) => [r.acc.id, r]));
+    host.querySelectorAll('.dock-row').forEach((el) => {
+      const hit = byId.get(el.dataset.id);
+      if (hit) syncDockRow(el, hit.pid, hit.acc);   // 账户没了 / 停用了：那一行等结构指纹那一拍重建
+    });
+  }
+
+  /** 保存被拒时的行内提示：跟表单的 showFormError 一个思路（⚠ + 行内一行小字，不弹 alert）。
+   *  `.formerr` 的红字样式选择器限定在 `.acc-form` 里，这里再挂 `.hintline` 借设置页的小字呈现。 */
+  function showDockError(row, msg) {
+    let el = row.querySelector('.formerr');
+    if (!el) {
+      el = document.createElement('p');
+      el.className = 'formerr hintline';
+      row.appendChild(el);
+    }
+    el.textContent = '⚠ ' + msg;
+  }
+
+  /** 保存一行的口径（金额框也走这里）。口径与预算先按 lib/dock-metric.js 规范化：
+   *  空 / 0 / 负数 / 非数字 → null（未设预算）。清空输入框只能发生在成功分支里 ——
+   *  被拒时（如账户恰在保存瞬间被删）输入框原样留着：界面显示的那份，必须还是用户刚输入、
+   *  也确实没存上的那份；静默清空会让用户以为存上了。成功才闪「已保存」。 */
+  async function saveDockRow(el) {
+    const sel = el.querySelector('select.dmetric');
+    const inp = el.querySelector('.dbudget input');
+    const cur = DOCKM.normalize(el.dataset.pid, { metric: sel ? sel.value : null, budget: inp ? inp.value : null });
+    const next = await window.glm.accDock({ id: el.dataset.id, metric: cur.metric, budget: cur.budget });
+    if (next && !next.err) {
+      const old = el.querySelector('.formerr');
+      if (old) old.remove();                         // 这次成功了，上一次留下的报错收走
+      if (inp && cur.budget == null) inp.value = ''; // 非法 / 空：输入框清空（存下的就是「未设预算」）
+      window.GLMPUI.applyState(next);
+      window.GLMPUI.flashSaved();
+    } else if (next && next.err) {
+      showDockError(el, next.err);
     }
   }
 

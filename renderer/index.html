@@ -19,6 +19,17 @@
   <svg class="dock-edge" aria-hidden="true"><path d=""></path></svg>
 </section>
 
+<!-- F · 飞出卡片（贴边悬停圆圈时的详情窗）：?flyout=1 时只画这一张。
+     头部一行（logo + 账户名 + 口径百分比）与 pane 都由渲染层生成 —— pane 用 PANES 工厂
+     新建的独立实例，不碰主窗面板里的那一份 -->
+<section id="flyout" class="shell glass">
+  <div class="fx-head" id="fxHead" hidden>
+    <span class="fx-logo" aria-hidden="true"></span>
+    <span class="fx-title" id="fxTitle"></span>
+  </div>
+  <div id="fxBody"></div>
+</section>
+
 <!-- B · 展开面板：页签按 provider 生成，视图由 panes.js 的工厂渲染 -->
 <section id="panel" class="shell glass">
   <div class="phead">
@@ -81,6 +92,14 @@
       <button class="btn pri" id="saveBtn">保存并刷新</button>
     </div>
     <p class="note">自动刷新带 ±20s 随机抖动，另有托盘「立即刷新」；请求直连各官方域名，不会被 CORS 拦截。所有凭据只保存在本机 <code>config.json</code>，不会外发。</p>
+
+    <!-- 贴边圆圈（dock）：每个启用账户的圆圈口径（DeepSeek 另配预算当 100%）。
+         行由 settings.js 生成；没有启用账户时整段隐藏 -->
+    <div id="dockSec" hidden>
+      <h4 class="sech">贴边圆圈</h4>
+      <p class="hintline">把胶囊拖到屏幕左 / 右边缘松手，会变成一列圆圈；这里设定每个圆圈显示哪个百分比</p>
+      <div id="dockRows"></div>
+    </div>
   </div>
 </section>
 

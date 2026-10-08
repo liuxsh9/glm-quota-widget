@@ -155,6 +155,10 @@ window.__view = null; window.__saved = null; window.__tab = null; window.__tray 
 window.__ready = false; window.__ctx = 0; window.__activated = null;
 window.__capSize = null; window.__capSizes = []; window.__menu = null; window.__panelSize = null; window.__panelSizes = [];
 window.__dockSize = null; window.__dockSizes = [];
+window.__dockHover = null; window.__dockHovers = [];           // 圆圈悬停（dock:hover）
+window.__dockSaved = null; window.__dockSaves = [];            // 圆圈口径保存（acc:dock）：最后一次 / 全部
+window.__flyoutHover = null; window.__flyoutHovers = [];       // 卡片进出（flyout:hover）
+window.__flyoutSize = null; window.__flyoutSizes = [];         // 卡片实测尺寸上报
 window.__dragStart = null; window.__dragMove = 0; window.__dragEnd = 0;
 // 与主进程一致的最小凭据校验：填了但形态不对 → 桥返回 { err }（用来测「静默失败」那条链路）
 const REQ = { glm: { token: /[A-Za-z0-9]{16,}\\.[A-Za-z0-9]{12,}|ey[A-Za-z0-9_-]{10,}\\./ },
@@ -201,9 +205,22 @@ window.glm = {
     return window.__state;
   },
   accMenu: async (p) => { window.__menu = p; return window.__state; },   // 原生菜单：只记请求
+  // 圆圈口径（acc:dock）：照主进程实现 —— GLMDOCK.normalize 规范化后落到 config.accounts 与运行态账户上
+  accDock: async (p) => { window.__dockSaved = p; window.__dockSaves.push(p);
+    const acc = window.__state.config.accounts.find(x => x.id === p.id);
+    if (!acc) return { err: '账户不存在' };
+    acc.dock = GLMDOCK.normalize(acc.provider, { metric: p.metric, budget: p.budget });
+    const prov = window.__state.providers[acc.provider];
+    const live = prov && prov.accounts.find(x => x.id === p.id);
+    if (live) live.dock = acc.dock;
+    return window.__state; },
   capsuleSize: (s) => { window.__capSize = s; window.__capSizes.push(s); },
   dockSize: (s) => { window.__dockSize = s; window.__dockSizes.push(s); },   // 贴边列实测尺寸上报
   panelSize: (s) => { window.__panelSize = s; window.__panelSizes = (window.__panelSizes || []).concat([s]); },
+  dockHover: (h) => { window.__dockHover = h; window.__dockHovers.push(h); },        // 悬停圆圈 → 飞出卡片
+  flyoutHover: (b) => { window.__flyoutHover = b; window.__flyoutHovers.push(b); },  // 卡片上的进出
+  flyoutSize: (s) => { window.__flyoutSize = s; window.__flyoutSizes.push(s); },     // 卡片实测尺寸
+  onFlyoutTarget: (cb) => { window.__fxCb = cb; },                                   // 主进程推来的目标
   setView: (v) => { window.__view = v; window.__state.view = v; },
   setTab: (t) => { window.__tab = t; window.__state.config.panelTab = t; },
   setZoom: (z) => { window.__zoom = z; window.__state.config.zoom = z; window.__cb(window.__state); },
@@ -242,14 +259,44 @@ def settle(pg, ms=450):
 with sync_playwright() as p:
     b = p.chromium.launch()
     ctx = b.new_context(viewport={"width": CAP_BOTH[0], "height": CAP_BOTH[1]})
-    ctx.route("**/renderer/index.html", lambda r: r.fulfill(body=HTML_NOCSP, content_type="text/html; charset=utf-8"))
+    # 用正则以匹配（?flyout=1 也走同一份去 CSP 的 HTML —— 飞出卡片是同一个 index.html）
+    ctx.route(re.compile(r"/renderer/index\.html"), lambda r: r.fulfill(body=HTML_NOCSP, content_type="text/html; charset=utf-8"))
     # 页面脚本加载前先钉死时钟：页里所有 Date.now()（倒计时 / 峰谷徽标 / 图表分桶 / INIT 里
-    # 测试自己注入的 NOW）都落在 FIXED_NOW，与运行时刻无关。注册序 = 执行序，必须在 INIT 之前
-    ctx.add_init_script(f"Date.now = () => {FIXED_NOW};")
+    # 测试自己注入的 NOW）都落在 FIXED_NOW，与运行时刻无关。注册序 = 执行序，必须在 INIT 之前。
+    # **连无参 new Date() 一起钉**：只钉 Date.now 管不到 lib/format.js:18 —— fmtResetTime 的
+    # sameDay 判断用的是无参 new Date()（决定渲染成「15:12」还是「09-14 15:12」），那是渲染层
+    # 加载文件里最后一处挂钟读取（T8 审查的低危发现）。带参数的构造照常（时间戳换算不变），
+    # 无参的用钉死时刻；Date.now 与它同值。
+    ctx.add_init_script(f"""
+      (() => {{
+        const FIXED = {FIXED_NOW};
+        const RealDate = Date;
+        Date = class extends RealDate {{
+          constructor(...a) {{ super(...(a.length ? a : [FIXED])); }}
+          static now() {{ return FIXED; }}
+        }};
+      }})();""")
     ctx.add_init_script(INIT)
     pg = ctx.new_page()
     pg.goto(PAGE)
     pg.wait_for_function("document.querySelector('.pv5') && document.querySelector('.pv5').textContent !== '–'")
+
+    print("测试时钟钉死（含无参 new Date，T8 审查的漏网点）:")
+    t("Date.now 钉在 FIXED_NOW", pg.evaluate("Date.now()") == FIXED_NOW)
+    t("无参 new Date() 也用钉死时刻（getTime 同值）", pg.evaluate("new Date().getTime()") == FIXED_NOW)
+    t("无参 new Date().toDateString() == 钉死时刻的日期串（在本机时区下逐字相同）",
+      pg.evaluate("new Date().toDateString()") == pg.evaluate("(n) => new Date(n).toDateString()", FIXED_NOW),
+      f'{pg.evaluate("new Date().toDateString()")} vs {pg.evaluate("(n) => new Date(n).toDateString()", FIXED_NOW)}')
+    t("带参数的 new Date(ts) 照常（时间戳换算没被钉子带歪）",
+      pg.evaluate("(n) => new Date(n + 5000).getTime()", FIXED_NOW) == FIXED_NOW + 5000)
+    # 行为层证明：fmtResetTime 的 sameDay 分支读的就是这个无参 new Date()。
+    # 若它没被钉住（读到墙钟的今天），跨日 → 会渲染成「MM-DD HH:MM」而不是「HH:MM」，这条必红。
+    t("fmtResetTime 的 sameDay 判断也走钉死时钟（当天 → HH:MM 短格式）", pg.evaluate("""(n) => {
+        const d = new Date(n + 2 * 3600e3);
+        const pad = (x) => String(x).padStart(2, '0');
+        const want = pad(d.getHours()) + ':' + pad(d.getMinutes());
+        return GLMFMT.fmtResetTime(n + 2 * 3600e3) === want;
+      }""", FIXED_NOW))
 
     print("胶囊 · 正常态（双列）:")
     t("就绪信号已发", pg.evaluate("window.__ready"))
@@ -869,7 +916,7 @@ with sync_playwright() as p:
     push(pg, view="settings")
     pg.wait_for_function("document.body.className.includes('view-settings')")
     pg.set_viewport_size({"width": SETTINGS[0], "height": SETTINGS[1]})
-    t("设置页分四段（三家 provider + 通用）", pg.locator("#settings .sech").count() == 4)
+    t("设置页分五段（三家 provider + 通用 + 贴边圆圈）", pg.locator("#settings .sech").count() == 5)
     t("三行账户（主号/备用号/DeepSeek）", pg.locator("#settings .acc-row").count() == 3)
     t("账户行显示尾号", "0LD_OLD" in pg.text_content("#provSecs"))
     t("账户状态词=已失效", "已失效" in pg.text_content("#provSecs .acc-row[data-id='a1'] .aword"))
@@ -1014,6 +1061,227 @@ with sync_playwright() as p:
     pg.wait_for_function("window.__saved")
     t("保存含阈值 75 与间隔", pg.evaluate("window.__saved.warnThreshold === 75 && window.__saved.intervalMin === 30"))
     t("保存后回到面板", pg.evaluate("window.__view") == "panel")
+
+    print("设置页 · 贴边圆圈段（每个启用账户的圆圈口径 / DeepSeek 预算）:")
+    # 三家各一个启用账户 + 一个停用的 GLM 账户：段里恰好 3 行，停用的不出场。
+    # 这一段自装一套干净状态，跑完原样还原（只碰设置页，不影响下游用例）
+    _pre_ids = pg.evaluate("window.__state.config.accounts.map(a => a.id).join()")
+    pg.evaluate("""() => {
+      const s = window.__state, NOW = Date.now(), H = 3600e3;
+      const md = (id, name, pct) => {
+        const d = JSON.parse(JSON.stringify(window.__glmData));
+        d.five.percent = pct;
+        return { id, name, enabled: true, status: 'ok', msg: '', lastFetchAt: NOW, tier: 'low',
+                 dock: { metric: 'five', budget: null }, data: d };
+      };
+      const win = (percent) => ({ known: true, percent, used: null, total: null, remaining: null,
+        nextResetTime: NOW + 3 * H, windowStart: NOW, windowMs: 5 * H });
+      window.__preDockSec = JSON.parse(JSON.stringify({ providers: s.providers, config: s.config }));
+      s.providers.glm.accounts = [md('a1', '主号', 41),
+        { id: 'a2', name: '停用号', enabled: false, status: 'ok', msg: '', lastFetchAt: NOW, data: null }];
+      s.providers.glm.activeId = 'a1';
+      s.providers.volc = { name: '火山方舟 Coding / Agent Plan', tab: '火山', tier: 'low',
+        accounts: [{ id: 'v1', name: '火山', enabled: true, status: 'ok', msg: '', lastFetchAt: NOW, tier: 'low',
+          dock: { metric: 'five', budget: null },
+          data: { plan: 'coding', level: null, bothSubscribed: false, warn: '', fetchedAt: NOW,
+                  five: win(62), week: win(38), month: win(21) } }],
+        activeId: 'v1' };
+      s.providers.deepseek.accounts[0].dock = { metric: 'today', budget: null };
+      s.config.accounts = [
+        { id: 'a1', provider: 'glm', name: '主号', enabled: true, creds: { token: { set: true, tail: '0LD_OLD' } }, dock: { metric: 'five', budget: null } },
+        { id: 'a2', provider: 'glm', name: '停用号', enabled: false, creds: { token: { set: true, tail: '0FF_000' } }, dock: { metric: 'five', budget: null } },
+        { id: 'v1', provider: 'volc', name: '火山', enabled: true, creds: { accessKeyId: { set: true, tail: 'xxxxxx' } }, dock: { metric: 'five', budget: null } },
+        { id: 'd1', provider: 'deepseek', name: 'DeepSeek', enabled: true, creds: { apiKey: { set: true, tail: 'def' } }, dock: { metric: 'today', budget: null } },
+      ];
+      s.view = 'settings';
+      window.__cb(s);
+    }""")
+    pg.wait_for_function("document.body.className.includes('view-settings')")
+    pg.set_viewport_size({"width": SETTINGS[0], "height": SETTINGS[1]})
+    pg.wait_for_timeout(200)
+    t("新段在「通用」下方：最后一段标题就是「贴边圆圈」", pg.evaluate(
+      "[...document.querySelectorAll('#settings .sech')].map(e => e.textContent).join('|')"
+    ).endswith("通用|贴边圆圈"))
+    t("一行说明（拖到左 / 右边缘松手变圆圈）", pg.text_content("#dockSec .hintline").strip() ==
+      "把胶囊拖到屏幕左 / 右边缘松手，会变成一列圆圈；这里设定每个圆圈显示哪个百分比",
+      repr(pg.text_content("#dockSec .hintline")))
+    t("段内恰好 3 行（三家各一个启用账户）", pg.locator("#dockRows .dock-row").count() == 3)
+    t("停用的 GLM 账户不出现", pg.locator("#dockRows .dock-row[data-id='a2']").count() == 0)
+    t("行的顺序 = 注册表序 → 账户原序（glm → deepseek → 火山）", pg.evaluate(
+      "[...document.querySelectorAll('#dockRows .dock-row')].map(e => e.dataset.pid + ':' + e.dataset.id).join()")
+      == "glm:a1,deepseek:d1,volc:v1", pg.evaluate(
+      "[...document.querySelectorAll('#dockRows .dock-row')].map(e => e.dataset.pid + ':' + e.dataset.id).join()"))
+    t("行里有账户名", pg.text_content("#dockRows .dock-row[data-id='a1'] .dname") == "主号"
+      and pg.text_content("#dockRows .dock-row[data-id='v1'] .dname") == "火山")
+    t("GLM 下拉 2 项 / 火山 3 项 / DS 3 项",
+      pg.locator("#dockRows .dock-row[data-id='a1'] select.dmetric option").count() == 2
+      and pg.locator("#dockRows .dock-row[data-id='v1'] select.dmetric option").count() == 3
+      and pg.locator("#dockRows .dock-row[data-id='d1'] select.dmetric option").count() == 3)
+    t("选项文案来自 METRICS（火山：5 小时额度 / 周额度 / 月额度）", pg.evaluate(
+      "[...document.querySelectorAll(\"#dockRows .dock-row[data-id='v1'] select.dmetric option\")].map(o => o.textContent).join()")
+      == "5 小时额度,周额度,月额度")
+    t("GLM 下拉回显当前口径 five", pg.eval_on_selector(
+      "#dockRows .dock-row[data-id='a1'] select.dmetric", "e => e.value") == "five")
+    t("只有 DeepSeek 行有金额框", pg.locator("#dockRows .dock-row .dbudget").count() == 1
+      and pg.locator("#dockRows .dock-row[data-id='d1'] .dbudget").count() == 1)
+    t("未设预算（dock.budget=null）→ 金额框显示空", pg.eval_on_selector(
+      "#dockRows .dock-row[data-id='d1'] .dbudget input", "e => e.value") == "")
+    t("金额框：¥ 前缀 + inputmode=decimal + 默认占位「预算，如 20」", pg.evaluate("""() => {
+        const row = document.querySelector("#dockRows .dock-row[data-id='d1']");
+        const inp = row.querySelector('.dbudget input');
+        return inp.getAttribute('inputmode') === 'decimal'
+          && row.querySelector('.dbudget .dcur').textContent.trim() === '¥'
+          && inp.placeholder === '预算，如 20';
+      }"""))
+    t("每行带该家的 logo（GLMLOGOS 同一份内联 SVG）", pg.evaluate("""() => {
+        const want = (pid) => new DOMParser().parseFromString('<svg>' + GLMLOGOS[pid] + '</svg>', 'text/html')
+          .querySelector('svg path').getAttribute('d');
+        const rows = [...document.querySelectorAll('#dockRows .dock-row')];
+        return rows.length === 3 && rows.every(r =>
+          r.querySelector('.dlogo svg path')
+          && r.querySelector('.dlogo svg path').getAttribute('d') === want(r.dataset.pid));
+      }"""))
+
+    print("贴边圆圈段 · 改口径立即保存:")
+    pg.evaluate("document.querySelector('#saveTip').classList.remove('show')")
+    pg.select_option("#dockRows .dock-row[data-id='a1'] select.dmetric", "week")
+    pg.wait_for_function("window.__dockSaved && window.__dockSaved.id === 'a1'")
+    pg.wait_for_timeout(80)
+    t("改 GLM 口径为「周」→ accDock({id:'a1', metric:'week', budget:null})",
+      pg.evaluate("window.__dockSaved") == {"id": "a1", "metric": "week", "budget": None},
+      str(pg.evaluate("window.__dockSaved")))
+    t("成功的口径保存闪出「已保存」", pg.locator("#saveTip").evaluate("e => e.classList.contains('show')"))
+    t("落到了这个账户上（state 里 dock.metric）", pg.evaluate(
+      "window.__state.config.accounts.find(a => a.id === 'a1').dock.metric") == "week")
+
+    print("贴边圆圈段 · DeepSeek 预算（输入 25 → change 即存）:")
+    inp_sel = "#dockRows .dock-row[data-id='d1'] .dbudget input"
+    pg.fill(inp_sel, "25")
+    pg.keyboard.press("Enter")     # 回车即 change（失焦同理）
+    pg.wait_for_function("window.__dockSaved && window.__dockSaved.id === 'd1'")
+    pg.wait_for_timeout(80)
+    t("输入 25 → 渲染层发出的是数字 25（不是字符串；断言的是发给主进程的负载，主进程还会再 normalize 一次）",
+      pg.evaluate("window.__dockSaved") == {"id": "d1", "metric": "today", "budget": 25}
+      and pg.evaluate("typeof window.__dockSaved.budget") == "number",
+      str(pg.evaluate("window.__dockSaved")))
+    t("落到了 DS 账户上（state 里 dock.budget=25）", pg.evaluate(
+      "window.__state.config.accounts.find(a => a.id === 'd1').dock.budget") == 25)
+    t("金额框保留 25", pg.eval_on_selector(inp_sel, "e => e.value") == "25")
+    t("有预算 → 「未设预算」提示收走", not pg.locator("#dockRows .dock-row[data-id='d1'] .dhint").is_visible())
+
+    print("贴边圆圈段 · 输入过程中余额广播不打断:")
+    pg.fill(inp_sel, "30.5")       # 打了一半，不提交
+    pg.evaluate("""() => { document.querySelector("#dockRows .dock-row[data-id='d1']").__mark = 'keep'; }""")
+    t("（前置）焦点在金额框", pg.evaluate(
+      "document.activeElement === document.querySelector(\"%s\")" % inp_sel))
+    set_dev(pg, "s.providers.deepseek.accounts[0].data.balance.total = 299.99;")
+    pg.wait_for_timeout(150)
+    t("广播（余额刷新）后输入内容还在", pg.eval_on_selector(inp_sel, "e => e.value") == "30.5",
+      str(pg.eval_on_selector(inp_sel, "e => e.value")))
+    t("焦点还在金额框（没被重建丢焦点）", pg.evaluate(
+      "document.activeElement === document.querySelector(\"%s\")" % inp_sel))
+    t("行 DOM 没被重建（还是同一个节点）", pg.evaluate(
+      "document.querySelector(\"#dockRows .dock-row[data-id='d1']\").__mark") == "keep")
+
+    print("贴边圆圈段 · 非法金额 = 未设预算（不会变成钉死圆圈的荒唐预算）:")
+    pg.evaluate("window.__dockSaved = null")
+    pg.fill(inp_sel, "0")
+    pg.keyboard.press("Enter")
+    pg.wait_for_function("window.__dockSaved && window.__dockSaved.id === 'd1'")
+    pg.wait_for_function("document.querySelector(\"%s\").value === ''" % inp_sel)
+    t("输入 0 → 保存为「未设预算」（normalize 后 budget=null）",
+      pg.evaluate("window.__dockSaved") == {"id": "d1", "metric": "today", "budget": None},
+      str(pg.evaluate("window.__dockSaved")))
+    t("state 里这个账户的预算回到 null", pg.evaluate(
+      "window.__state.config.accounts.find(a => a.id === 'd1').dock.budget") is None)
+    t("输入框清空", pg.eval_on_selector(inp_sel, "e => e.value") == "")
+    t("行内出现灰色提示「未设预算时圆圈不显示百分比」",
+      pg.locator("#dockRows .dock-row[data-id='d1'] .dhint").is_visible()
+      and pg.text_content("#dockRows .dock-row[data-id='d1'] .dhint").strip() == "未设预算时圆圈不显示百分比")
+    pg.evaluate("window.__dockSaved = null")
+    pg.fill(inp_sel, "abc")
+    pg.keyboard.press("Enter")
+    pg.wait_for_function("window.__dockSaved && window.__dockSaved.id === 'd1'")
+    pg.wait_for_function("document.querySelector(\"%s\").value === ''" % inp_sel)
+    t("输入 abc → 同样存为「未设预算」、输入框清空、提示还在",
+      pg.evaluate("window.__dockSaved") == {"id": "d1", "metric": "today", "budget": None}
+      and pg.eval_on_selector(inp_sel, "e => e.value") == ""
+      and pg.locator("#dockRows .dock-row[data-id='d1'] .dhint").is_visible())
+
+    print("贴边圆圈段 · 保存被拒（账户恰在保存瞬间被删）不许清空输入:")
+    # 模拟失败：把 d1 从 config 里静默摘掉（不广播 —— 行还在 DOM 里），桥就会回 {err:'账户不存在'}
+    pg.evaluate("""() => { const s = window.__state;
+      window.__failDockAcc = s.config.accounts.find(a => a.id === 'd1');
+      s.config.accounts = s.config.accounts.filter(a => a.id !== 'd1');
+      window.__dockSaved = null;
+      document.querySelector('#saveTip').classList.remove('show'); }""")
+    # 输入 0（normalize 后会成「未设预算」的那种值）：旧代码会在判结果前就把它清掉
+    pg.fill(inp_sel, "0")
+    pg.keyboard.press("Enter")
+    pg.wait_for_function("window.__dockSaved && window.__dockSaved.id === 'd1'")
+    pg.wait_for_timeout(80)
+    t("失败（accDock 回 {err}）→ 输入框没被清空（没存上的那份还在原位）+ 行内错误提示可见 + 不闪「已保存」",
+      pg.evaluate("""() => {
+        const row = document.querySelector("#dockRows .dock-row[data-id='d1']");
+        const err = row.querySelector('.formerr');
+        return row.querySelector('.dbudget input').value === '0'
+          && !!err && err.getClientRects().length > 0 && err.textContent.includes('账户不存在')
+          && !document.querySelector('#saveTip').classList.contains('show');
+      }"""),
+      "value=%r err=%r" % (pg.eval_on_selector(inp_sel, "e => e.value"),
+                           pg.evaluate("(document.querySelector(\"#dockRows .dock-row[data-id='d1'] .formerr\") || {}).textContent")))
+    # 账户回来（静默恢复，不广播）：换成成功路径 —— 这时才该清空输入框、上次的报错收走
+    pg.evaluate("() => { window.__state.config.accounts.push(window.__failDockAcc); }")
+    pg.fill(inp_sel, "abc")
+    pg.keyboard.press("Enter")
+    pg.wait_for_function("window.__dockSaved && window.__dockSaved.id === 'd1' && window.__dockSaved.budget === null")
+    pg.wait_for_function("document.querySelector(\"%s\").value === ''" % inp_sel)
+    t("保存成功且 budget==null → 这时才清空输入框，上一次的报错一并收走",
+      pg.evaluate("""() => {
+        const row = document.querySelector("#dockRows .dock-row[data-id='d1']");
+        return row.querySelector('.dbudget input').value === '' && !row.querySelector('.formerr');
+      }"""))
+
+    print("贴边圆圈段 · 占位跟着口径走 / 回显:")
+    pg.fill(inp_sel, "40")         # 先给个预算（前面刚被清空）
+    pg.keyboard.press("Enter")
+    pg.wait_for_function("window.__dockSaved && window.__dockSaved.budget === 40")
+    pg.evaluate("window.__dockSaved = null")
+    pg.select_option("#dockRows .dock-row[data-id='d1'] select.dmetric", "last7")
+    t("选「近 7 天」立刻换占位（不等主进程回包）", pg.get_attribute(inp_sel, "placeholder") == "近 7 天预算",
+      str(pg.get_attribute(inp_sel, "placeholder")))
+    pg.wait_for_function("window.__dockSaved && window.__dockSaved.metric === 'last7'")
+    t("改口径不清预算：accDock 带上当前的 40",
+      pg.evaluate("window.__dockSaved") == {"id": "d1", "metric": "last7", "budget": 40},
+      str(pg.evaluate("window.__dockSaved")))
+    # 回显：state 里换成 {metric:'month', budget:40}（模拟别的来源改了配置）
+    pg.evaluate("document.activeElement && document.activeElement.blur()")
+    pg.evaluate("""() => { const s = window.__state; const dock = { metric: 'month', budget: 40 };
+      s.config.accounts.find(a => a.id === 'd1').dock = dock;
+      s.providers.deepseek.accounts.find(a => a.id === 'd1').dock = dock;
+      window.__cb(s); }""")
+    pg.wait_for_timeout(150)
+    t("回显：下拉选中「本月」",
+      pg.eval_on_selector("#dockRows .dock-row[data-id='d1'] select.dmetric", "e => e.value") == "month")
+    t("回显：金额框显示 40", pg.eval_on_selector(inp_sel, "e => e.value") == "40",
+      str(pg.eval_on_selector(inp_sel, "e => e.value")))
+    t("回显：占位是本月那条（这笔钱对应哪个周期）", pg.get_attribute(inp_sel, "placeholder") == "本月预算")
+    t("有预算 → 提示不显示", not pg.locator("#dockRows .dock-row[data-id='d1'] .dhint").is_visible())
+
+    print("贴边圆圈段 · 没有启用账户时整段隐藏:")
+    pg.evaluate("""() => { const s = window.__state;
+      s.config.accounts.forEach(a => { a.enabled = false; });
+      window.__cb(s); }""")
+    pg.wait_for_timeout(150)
+    t("全部停用 → 整段隐藏（连标题一起收走）",
+      pg.locator("#dockSec").is_hidden() and not pg.locator("#dockSec .sech").is_visible()
+      and pg.locator("#dockRows .dock-row").count() == 0)
+    # 收拾：还原本段之前的状态（快照在夹具里取的），下游用例不受影响
+    pg.evaluate("() => { const s = window.__state, b = window.__preDockSec;"
+                " s.providers = b.providers; s.config = b.config; window.__cb(s); }")
+    pg.wait_for_timeout(150)
+    t("恢复本段之前的账户集（不影响下游用例）",
+      pg.evaluate("window.__state.config.accounts.map(a => a.id).join()") == _pre_ids)
 
     print("点空白收起:")
     pg.evaluate("() => { const s = window.__state; s.view='panel'; s.config.panelTab='glm'; window.__cb(s); }")
@@ -1314,10 +1582,58 @@ with sync_playwright() as p:
       }"""))
     t("三家 logo 同一颜色（吃主题前景色，没有特殊着色）", pg.evaluate(
       "new Set([...document.querySelectorAll('#dock .dc .dc-logo svg')].map(e => getComputedStyle(e).fill)).size") == 1)
-    t("每个圆圈带原生 title（账户名 · 口径 label，悬停详情是下一张单）", pg.evaluate(
-      "[...document.querySelectorAll('#dock .dc')].map(e => e.title).join(' | ')")
-      == "主号 · 5 小时额度 | 备用号 · 5 小时额度 | DeepSeek · 今日",
-      str(pg.evaluate("[...document.querySelectorAll('#dock .dc')].map(e => e.title)")))
+    t("圆圈上没有原生 title（悬停详情改由飞出卡片承担，两个 tooltip 不同时出现）", pg.evaluate(
+      "[...document.querySelectorAll('#dock .dc, #dock .dc *')].every(e => !e.hasAttribute('title'))"),
+      str(pg.evaluate("[...document.querySelectorAll('#dock .dc, #dock .dc *')].map(e => e.getAttribute('title'))")))
+
+    print("贴边模式（dock）· 圆圈悬停 → dockHover（飞出卡片的触发源）:")
+    pg.evaluate("() => { window.__dockHover = null; window.__dockHovers = []; }")
+    _dock_before = pg.evaluate("""() => {
+        const r = document.querySelector('#dock').getBoundingClientRect();
+        return [r.x, r.y, r.width, r.height, window.__dockSizes.length];
+      }""")
+    _ring = pg.evaluate("""() => {
+        const el = document.querySelector("#dock .dc[data-acc-id='a1'] .dc-top");
+        const r = el.getBoundingClientRect();
+        return { cy: r.top + r.height / 2, vh: window.innerHeight };
+      }""")
+    pg.locator("#dock .dc[data-acc-id='a1']").hover()
+    pg.wait_for_timeout(120)
+    _hv = pg.evaluate("window.__dockHover")
+    t("圆圈 pointerenter → dockHover({accId, cy})：accId 是悬停的那个",
+      (_hv or {}).get("accId") == "a1", str(_hv))
+    t("cy = 圆心相对窗口顶部（圆环中心，允许 1px 取整）",
+      _hv is not None and abs(_hv["cy"] - _ring["cy"]) <= 1, f'{_hv} vs ring {_ring}')
+    t("cy 在合理范围（0 ≤ cy ≤ 窗口高）",
+      _hv is not None and 0 <= _hv["cy"] <= _ring["vh"], str(_hv))
+    pg.mouse.move(5, 5)   # 移开圆圈（贴边列在窗口左上角，这里一定在外面）
+    pg.wait_for_timeout(120)
+    t("圆圈 pointerleave → dockHover(null)",
+      pg.evaluate("window.__dockHovers.slice(-1)[0]") is None,
+      str(pg.evaluate("window.__dockHovers")))
+    t("悬停期间发的全是「这个圆圈」的负载（没有 null 先冒出来）",
+      pg.evaluate("window.__dockHovers.length") == 2, str(pg.evaluate("window.__dockHovers")))
+    t("悬停不改变贴边列本身（dock 纹丝不动、也没多报一次尺寸）", pg.evaluate("""() => {
+        const r = document.querySelector('#dock').getBoundingClientRect();
+        return [r.x, r.y, r.width, r.height, window.__dockSizes.length];
+      }""") == _dock_before, str(pg.evaluate("""() => {
+        const r = document.querySelector('#dock').getBoundingClientRect();
+        return [[r.x, r.y, r.width, r.height, window.__dockSizes.length], %s];
+      }""" % _dock_before)))
+
+    print("贴边模式（dock）· 拖拽开始（按下）补发 dockHover(null):")
+    pg.locator("#dock .dc[data-acc-id='a1']").hover()
+    pg.wait_for_timeout(120)
+    pg.mouse.down()
+    pg.wait_for_timeout(60)
+    t("圆圈上按下 → 补发 dockHover(null)（拖动与点击共用一条手势，详情卡片不跟着窗口跑）",
+      pg.evaluate("window.__dockHovers.slice(-1)[0]") is None, str(pg.evaluate("window.__dockHovers")))
+    pg.mouse.move(5, 5)   # 移开越过 3px 死区再松手：这条手势按拖拽收尾，不触发「点圆圈 → 展开面板」
+    pg.wait_for_timeout(60)
+    pg.mouse.up()
+    pg.wait_for_timeout(120)
+    t("（前置）按下手势没顺带展开面板（按拖拽收尾）",
+      pg.evaluate("window.__view") is None, str(pg.evaluate("window.__view")))
 
     print("贴边模式（dock）· 没有数 / 过期 / 超预算:")
     set_dev(pg, "s.providers.deepseek.accounts[0].dock = { metric: 'today', budget: null };")
@@ -1595,6 +1911,156 @@ with sync_playwright() as p:
     t("重新启用后 .dc-empty 消失、圆圈回来", pg.locator("#dock .dc-empty").count() == 0
       and pg.locator("#dock .dc").count() == 3,
       str(pg.evaluate("[document.querySelectorAll('#dock .dc-empty').length, document.querySelectorAll('#dock .dc').length]")))
+
+    # ---- 飞出卡片（?flyout=1）：贴边悬停圆圈的详情窗 ----
+    print("飞出卡片（flyout）：?flyout=1 只画卡片 / 目标账户 / 尺寸上报 / 点空白展开:")
+    fx = ctx.new_page()
+    fx.goto(PAGE + "?flyout=1")
+    fx.wait_for_function("window.__ready")
+    fx.wait_for_timeout(150)
+    _disp = fx.evaluate("""() => ['capsule', 'dock', 'panel', 'settings', 'flyout']
+        .map(id => getComputedStyle(document.getElementById(id)).display)""")
+    t("?flyout=1：只显示卡片（胶囊 / 贴边 / 面板 / 设置全隐藏）",
+      _disp == ["none", "none", "none", "none", "flex"]
+      and fx.evaluate("document.body.classList.contains('view-flyout')"), str(_disp))
+    t("还没推目标：卡片是空的（头部收着、没有 pane）", fx.evaluate(
+      "!document.querySelector('#fxHead').offsetParent && document.querySelectorAll('#flyout .pane').length === 0"))
+    t("没目标就不上报尺寸（空卡片的尺寸不作数）", fx.evaluate("window.__flyoutSize") is None)
+
+    # 推一份「GLM 两个号」的状态（激活的是主号），再悬停备用号：
+    # 卡片必须画**悬停的那个**（备用号 88%），不是激活账户（主号 5%）
+    fx.evaluate("""() => {
+      const s = window.__state, NOW = Date.now();
+      const md = (id, name, pct) => {
+        const d = JSON.parse(JSON.stringify(window.__glmData));
+        d.five.percent = pct;
+        return { id, name, enabled: true, status: 'ok', msg: '', lastFetchAt: NOW,
+                 tier: 'low', dock: { metric: 'five' }, data: d };
+      };
+      s.view = 'dock'; s.config.dockSide = 'right'; s.config.panelTab = 'glm';
+      s.providers.glm.accounts = [md('a1', '主号', 5), md('a2', '备用号', 88)];
+      s.providers.glm.activeId = 'a1';
+      s.config.accounts.push({ id: 'a2', provider: 'glm', name: '备用号', enabled: true,
+        creds: { token: { set: true, tail: 'n3wtok' } }, dock: { metric: 'five' } });
+      window.__cb(s);
+    }""")
+    fx.wait_for_timeout(150)
+    fx.evaluate("t => window.__fxCb(t)", {"pid": "glm", "accId": "a2", "side": "right"})
+    fx.wait_for_timeout(200)
+    t("头部一行 = 悬停的那个账户（GLM · 备用号 · 5h 88%）",
+      fx.text_content("#fxTitle") == "GLM · 备用号 · 5h 88%", fx.text_content("#fxTitle"))
+    t("卡片的 pane 是备用号的数据 88%（不是当前激活的主号 5%）",
+      fx.text_content("#flyout .pane-glm .pv5") == "88", fx.text_content("#flyout .pane-glm .pv5"))
+    t("pane 是独立实例：卡片里的 pane 挂在 #flyout 下，飞出窗的 #panel 里一个都没有",
+      fx.evaluate("document.querySelectorAll('#flyout .pane').length === 1"
+                  " && document.querySelectorAll('#panel .pane').length === 0 && !!document.querySelector('#flyout .pane-glm')"))
+    t("头部有 logo（跟圆圈一样的内联 SVG）", fx.evaluate(
+      "document.querySelectorAll('#flyout .fx-logo svg path').length > 0"))
+    t("卡片宽度与面板一致（326）",
+      fx.evaluate("Math.round(document.querySelector('#flyout').getBoundingClientRect().width)") == 326,
+      str(fx.evaluate("document.querySelector('#flyout').getBoundingClientRect().width")))
+    t("上报尺寸 = 卡片实测 + 2×12 阴影走廊（主进程直接拿它当窗口尺寸）", fx.evaluate("""() => {
+        const r = document.querySelector('#flyout').getBoundingClientRect();
+        const s = window.__flyoutSize;
+        return !!s && s.w === Math.ceil(r.width) + 24 && s.h === Math.ceil(r.height) + 24;
+      }"""), str(fx.evaluate("[window.__flyoutSize, document.querySelector('#flyout').getBoundingClientRect().height]")))
+    t("尺寸上报带「这份量的是谁」：pid / accId = 当前目标（主进程据此配对，迟到旧目标的不算）",
+      fx.evaluate("""() => {
+        const s = window.__flyoutSize;
+        return !!s && s.pid === 'glm' && s.accId === 'a2';
+      }"""), str(fx.evaluate("window.__flyoutSize")))
+    t("卡片里的 pane 吃到面板同一套样式（大数字渐变字色 / 进度条有彩色填充）", fx.evaluate("""() => {
+        const b = document.querySelector('#flyout .pane-glm .pct b');
+        const fill = document.querySelector('#flyout .pane-glm .pbar i.f5');
+        return getComputedStyle(b).backgroundImage !== 'none'
+          && parseFloat(getComputedStyle(b).fontSize) >= 30
+          && parseFloat(getComputedStyle(fill).width) > 0;
+      }"""))
+    _main_pct = pg.evaluate("""() => {
+        const s = window.__state, p = s.providers.glm;
+        const a = p.accounts.find(x => x.id === p.activeId) || p.accounts[0];
+        return String(a.data.five.percent);
+      }""")
+    t("主窗面板不受影响：仍画主窗自己的当前账户（%s）—— 两窗各画各的" % _main_pct,
+      pg.text_content("#panel .pane-glm .pv5") == _main_pct and _main_pct != "88"
+      and fx.text_content("#flyout .pane-glm .pv5") == "88",
+      f'main={pg.text_content("#panel .pane-glm .pv5")} flyout={fx.text_content("#flyout .pane-glm .pv5")}')
+
+    # 每秒 tick：把钉死的时钟往前拨一小时 → 卡片里的倒计时跟着走（飞出窗自己跑一份 tick）
+    _cd0 = fx.text_content("#flyout .pane-glm .cd5")
+    fx.evaluate(f"Date.now = () => {FIXED_NOW} + 3600e3")
+    fx.wait_for_timeout(1300)
+    _cd1 = fx.text_content("#flyout .pane-glm .cd5")
+    t("每秒 tick 让卡片里的倒计时照常走", _cd0 != _cd1 and "小时" in _cd1, f"{_cd0} → {_cd1}")
+    fx.evaluate(f"Date.now = () => {FIXED_NOW}")
+
+    # 换成 DeepSeek 的**备用号**（d2，不是当前的 d1）：没填预算 → 头部指路；
+    # 填上预算 → 头部给百分比；卡片只留它自己的 pane
+    fx.evaluate("""() => {
+      const s = window.__state;
+      const d2 = JSON.parse(JSON.stringify(s.providers.deepseek.accounts[0]));
+      d2.id = 'd2'; d2.name = '小号'; d2.dock = { metric: 'today', budget: null };
+      s.providers.deepseek.accounts.push(d2);
+      s.config.accounts.push({ id: 'd2', provider: 'deepseek', name: '小号', enabled: true,
+        creds: { apiKey: { set: true, tail: 'abc123' } }, dock: { metric: 'today', budget: null } });
+      window.__cb(s);
+    }""")
+    fx.wait_for_timeout(120)
+    fx.evaluate("t => window.__fxCb(t)", {"pid": "deepseek", "accId": "d2", "side": "right"})
+    fx.wait_for_timeout(250)
+    t("DeepSeek 没填预算 → 头部提示「未设预算 · 在设置里填」",
+      fx.text_content("#fxTitle") == "DeepSeek · 小号 · 未设预算 · 在设置里填", fx.text_content("#fxTitle"))
+    t("换目标后卡片只留新 provider 的 pane", fx.evaluate("""() => {
+        const panes = [...document.querySelectorAll('#flyout .pane')];
+        return panes.length === 1 && panes[0].classList.contains('pane-ds');
+      }"""))
+    fx.evaluate("""() => {
+      const s = window.__state;
+      const d2 = s.providers.deepseek.accounts.find(a => a.id === 'd2');
+      d2.dock = { metric: 'today', budget: 20 };
+      d2.data.summary.today = 12.4;   // ¥12.4 ÷ 预算 ¥20 → 62%
+      window.__cb(s);
+    }""")
+    fx.wait_for_timeout(200)
+    t("填上预算 → 头部给出百分比（今日 62%）",
+      fx.text_content("#fxTitle") == "DeepSeek · 小号 · 今日 62%", fx.text_content("#fxTitle"))
+    t("换 provider 后尺寸重报一份（主进程据此重新摆窗口）", fx.evaluate("window.__flyoutSizes.length") >= 2,
+      str(fx.evaluate("window.__flyoutSizes")))
+    t("重报的尺寸同样带目标（换成了 DeepSeek · d2）", fx.evaluate("""() => {
+        const s = window.__flyoutSizes.slice(-1)[0];
+        return !!s && s.pid === 'deepseek' && s.accId === 'd2';
+      }"""), str(fx.evaluate("window.__flyoutSizes.slice(-1)[0]")))
+
+    # 卡片上的指针进出 → flyoutHover（主进程据此决定 250ms 后收不收）
+    fx.evaluate("() => { window.__flyoutHover = null; window.__flyoutHovers = []; }")
+    fx.hover("#flyout .fx-head")
+    fx.wait_for_timeout(100)
+    fx.mouse.move(1, 1)   # 挪出卡片（卡片四周是 12px 阴影走廊）
+    fx.wait_for_timeout(100)
+    t("卡片 pointerenter / pointerleave → flyoutHover(true / false)",
+      fx.evaluate("window.__flyoutHovers.join()") == "true,false",
+      str(fx.evaluate("window.__flyoutHovers")))
+
+    # 卡片里的控件仍是控件：点余额只切打码态，不展开面板
+    fx.evaluate("() => { window.__view = null; }")
+    t("（前置）余额默认打码", fx.text_content("#flyout .pane-ds .dstotal") == "••••")
+    fx.click("#flyout .pane-ds .ds-bal")
+    fx.wait_for_timeout(150)
+    t("点卡片里的余额：只切打码态，不展开面板",
+      fx.evaluate("window.__view") is None and fx.text_content("#flyout .pane-ds .dstotal") == "318.29",
+      f'{fx.evaluate("window.__view")} / {fx.text_content("#flyout .pane-ds .dstotal")}')
+
+    # 点卡片空白处 = 打开完整面板到该 provider 页签 / 该账户（同圆圈的点击行为）
+    fx.evaluate("() => { window.__view = null; window.__tab = null; window.__activated = null; }")
+    fx.click("#flyout .fx-head")
+    fx.wait_for_timeout(200)
+    t("点卡片空白 → 打开完整面板到该 provider 页签",
+      fx.evaluate("window.__view") == "panel" and fx.evaluate("window.__tab") == "deepseek",
+      f'{fx.evaluate("window.__view")} / {fx.evaluate("window.__tab")}')
+    t("点卡片空白 → 该账户同时成为当前账户（同圆圈点击；卡上的是备用号 d2，不是当前的 d1）",
+      (fx.evaluate("window.__activated") or {}).get("id") == "d2" and
+      fx.evaluate("window.__activated.provider") == "deepseek",
+      str(fx.evaluate("window.__activated")))
 
     b.close()
 
