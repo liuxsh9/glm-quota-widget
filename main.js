@@ -1275,13 +1275,13 @@ function accActivate({ provider, id }) {
 
 /** 保存单个账户的圆圈口径（贴边时该圆圈显示哪个百分比）。落到账户上：胶囊 / 面板 / 设置
  *  都以 config.accounts 为唯一真相，口径跟着账户走，不另开一份。 */
-function accDock({ id, metric, budget }) {
+function accDock({ id, metric, budget, show }) {
   const acc = getAcc(id);
   if (!acc) return { err: '账户不存在' };
-  acc.dock = dockMetric.normalize(acc.provider, { metric, budget });
+  acc.dock = dockMetric.normalize(acc.provider, { metric, budget, show });
   saveConfig();
   broadcast();
-  log('账户口径 ·', acc.provider, acc.id, acc.dock.metric, acc.dock.budget == null ? '' : acc.dock.budget);
+  log('账户口径 ·', acc.provider, acc.id, acc.dock.metric, acc.dock.budget == null ? '' : acc.dock.budget, acc.dock.show || '');
   return { ok: true };
 }
 

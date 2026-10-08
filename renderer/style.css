@@ -262,8 +262,14 @@ body.theme-light #dock .dock-edge path { stroke: rgba(255, 255, 255, .65); }
   transform-box: view-box; transform-origin: 50% 50%; transform: rotate(-90deg);
   transition: stroke-dashoffset .35s, stroke .35s;
 }
-#dock .dc-none .dc-arc { stroke: none; }              /* 取不到数（没填预算 / 无窗口）：只留底环 */
+#dock .dc-none .dc-arc:not(.dc-in) { stroke: none; } /* 取不到数（没填预算 / 无窗口）：只留底环 */
+#dock .dc-arc.dc-in:not([stroke]) { stroke: none; }   /* 内环没数：同样只留底环 */
 #dock .dc-warn .dc-arc { stroke: var(--ring-dim); }   /* 凭据失效 / 更新失败：整圈灰 */
+/* 双环口径（GLM「5h + 周」）：外环 = 5 小时，内环（细一档）= 周；logo 收小一点给内环让位 */
+#dock .dc .dc-in { display: none; }
+#dock .dc-dual .dc-in { display: inline; }
+#dock .dc-in { stroke-width: 2.5; }
+#dock .dc-dual .dc-logo svg { width: calc(14px * var(--ds)); height: calc(14px * var(--ds)); }
 #dock .dc-logo {
   position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
   color: var(--ink);      /* 三家 logo 同一颜色 = 主题前景色，不做任何一家的特殊着色 */
@@ -884,7 +890,7 @@ body.theme-light #settings .dock-row { background: rgba(23, 28, 45, .03); }
 }
 /* 行里的下拉比通用段窄：它跟账户名 / 金额框挤在同一行（口径长的一家会自己撑开）；
    「圆圈大小」行的下拉同一套尺寸 */
-#settings .dock-row select.dmetric, #settings .dock-row select.dscale { flex: 1 1 76px; width: auto; min-width: 0; margin-top: 0; padding: 5px 7px; }
+#settings .dock-row select.dmetric, #settings .dock-row select.dscale, #settings .dock-row select.dshow { flex: 1 1 76px; width: auto; min-width: 0; margin-top: 0; padding: 5px 7px; }
 #settings .dock-row .dbudget {
   flex: none; display: flex; align-items: center; gap: 4px;
   border-radius: 8px; padding: 0 8px;

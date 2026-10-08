@@ -43,8 +43,9 @@ ok('三家都有列表，每项形如 { key, label, short }', () => {
     assert.strictEqual(new Set(keys).size, keys.length, `${id} 有重复 key`);
   }
 });
-ok('口径集合与设计一致（GLM 5h/周、火山多一个月、DS 今日/近7天/本月）', () => {
-  assert.deepStrictEqual(M.METRICS.glm.map((m) => m.key), ['five', 'week']);
+ok('口径集合与设计一致（GLM 5h/周/双环、火山多一个月、DS 今日/近7天/本月）', () => {
+  assert.deepStrictEqual(M.METRICS.glm.map((m) => m.key), ['five', 'week', 'both']);
+  assert.deepStrictEqual(M.METRICS.glm[2].dual, ['five', 'week']);
   assert.deepStrictEqual(M.METRICS.volc.map((m) => m.key), ['five', 'week', 'month']);
   assert.deepStrictEqual(M.METRICS.deepseek.map((m) => m.key), ['today', 'last7', 'month']);
   assert.strictEqual(M.METRICS.glm[0].key, 'five');
@@ -55,7 +56,7 @@ ok('口径集合与设计一致（GLM 5h/周、火山多一个月、DS 今日/�
 /* ---------------- normalize ---------------- */
 console.log('\nnormalize:');
 ok('GLM：合法口径原样保留', () => {
-  assert.deepStrictEqual(M.normalize('glm', { metric: 'week' }), { metric: 'week', budget: null });
+  assert.deepStrictEqual(M.normalize('glm', { metric: 'week' }), { metric: 'week', budget: null, show: null });
 });
 ok('GLM：非法 / 缺失口径回默认 five', () => {
   assert.strictEqual(M.normalize('glm', { metric: 'month' }).metric, 'five');   // DS 的口径，GLM 没有
@@ -73,8 +74,8 @@ ok('火山：三项都认，非法回 five，budget 恒为 null', () => {
   assert.strictEqual(M.normalize('volc', { metric: 'month', budget: 30 }).budget, null);
 });
 ok('DeepSeek：budget "50" → 50（数值），非法口径回 today', () => {
-  assert.deepStrictEqual(M.normalize('deepseek', { metric: 'month', budget: '50' }), { metric: 'month', budget: 50 });
-  assert.deepStrictEqual(M.normalize('deepseek', { metric: 'last7', budget: 12.5 }), { metric: 'last7', budget: 12.5 });
+  assert.deepStrictEqual(M.normalize('deepseek', { metric: 'month', budget: '50' }), { metric: 'month', budget: 50, show: 'pct' });
+  assert.deepStrictEqual(M.normalize('deepseek', { metric: 'last7', budget: 12.5 }), { metric: 'last7', budget: 12.5, show: 'pct' });
   assert.strictEqual(M.normalize('deepseek', { metric: 'five' }).metric, 'today');
 });
 ok('DeepSeek：0 / -1 / "abc" / Infinity → budget null', () => {
@@ -85,16 +86,16 @@ ok('DeepSeek：0 / -1 / "abc" / Infinity → budget null', () => {
   assert.strictEqual(M.normalize('deepseek', { budget: '' }).budget, null);
   assert.strictEqual(M.normalize('deepseek', { budget: NaN }).budget, null);
 });
-ok('未知 provider → { metric: null, budget: null }', () => {
-  assert.deepStrictEqual(M.normalize('nope', { metric: 'five', budget: 50 }), { metric: null, budget: null });
-  assert.deepStrictEqual(M.normalize(undefined, {}), { metric: null, budget: null });
+ok('未知 provider → 全 null', () => {
+  assert.deepStrictEqual(M.normalize('nope', { metric: 'five', budget: 50 }), { metric: null, budget: null, show: null });
+  assert.deepStrictEqual(M.normalize(undefined, {}), { metric: null, budget: null, show: null });
   // 原型链上的键不能被当成 provider（否则 METRICS['toString'] 会炸）
-  assert.deepStrictEqual(M.normalize('toString', {}), { metric: null, budget: null });
+  assert.deepStrictEqual(M.normalize('toString', {}), { metric: null, budget: null, show: null });
 });
 ok('raw 是 undefined / 字符串 / 数字 / null 时不抛异常，回默认', () => {
   for (const raw of [undefined, null, 'week', 42, true, [], () => {}]) {
-    assert.deepStrictEqual(M.normalize('glm', raw), { metric: 'five', budget: null });
-    assert.deepStrictEqual(M.normalize('deepseek', raw), { metric: 'today', budget: null });
+    assert.deepStrictEqual(M.normalize('glm', raw), { metric: 'five', budget: null, show: null });
+    assert.deepStrictEqual(M.normalize('deepseek', raw), { metric: 'today', budget: null, show: 'pct' });
   }
 });
 
@@ -176,6 +177,51 @@ ok('setting 缺失 / 脏（undefined / 字符串 / 非法口径）→ 按该家�
   assert.strictEqual(M.percentOf('glm', GLM_DATA, 'week').raw, 41);            // 字符串不当口径用
   assert.strictEqual(M.percentOf('glm', GLM_DATA, { metric: 'month' }).raw, 41); // GLM 没有 month → five
   assert.ok(close(M.percentOf('deepseek', DS_DATA, { metric: 'month', budget: 100 }).raw, 96.8));
+});
+
+ok('DeepSeek show：认 pct / cost，非法回 pct；GLM / 火山恒为 null', () => {
+  assert.strictEqual(M.normalize('deepseek', { show: 'cost' }).show, 'cost');
+  assert.strictEqual(M.normalize('deepseek', { show: 'COST' }).show, 'pct');
+  assert.strictEqual(M.normalize('deepseek', {}).show, 'pct');
+  assert.strictEqual(M.normalize('glm', { show: 'cost' }).show, null);
+  assert.strictEqual(M.normalize('volc', { show: 'cost' }).show, null);
+});
+ok('GLM 双环：外环 = 5h、内环 = 周；周缺失时 inner 为 null', () => {
+  const p = M.percentOf('glm', GLM_DATA, { metric: 'both' });
+  assert.strictEqual(p.raw, 41);
+  assert.deepStrictEqual(p.inner, { pct: 23, raw: 23 });
+  assert.strictEqual(M.percentOf('glm', { five: { percent: 41 } }, { metric: 'both' }).inner, null);
+  assert.strictEqual(M.percentOf('glm', GLM_DATA, { metric: 'five' }).inner, undefined);   // 单环口径不带 inner
+});
+
+/* ---------------- cellOf ---------------- */
+console.log('\ncellOf:');
+ok('百分比口径：text = 未夹的 raw 取整 + %；取不到 → –、pct null', () => {
+  assert.strictEqual(M.cellOf('glm', GLM_DATA, { metric: 'five' }).text, '41%');
+  assert.strictEqual(M.cellOf('deepseek', { summary: { today: 15 } }, { metric: 'today', budget: 10 }).text, '150%');
+  const none = M.cellOf('deepseek', DS_DATA, { metric: 'today' });
+  assert.strictEqual(none.text, '–'); assert.strictEqual(none.pct, null);
+});
+ok('GLM 双环：cellOf 带 inner，数字跟外环', () => {
+  const c = M.cellOf('glm', GLM_DATA, { metric: 'both' });
+  assert.strictEqual(c.text, '41%'); assert.strictEqual(c.inner.pct, 23);
+});
+ok('DeepSeek 金额：不需要预算；有预算时弧仍按占比画', () => {
+  const d = { summary: { today: 3.214, last7: 12.34, month: 456.7 }, balance: { currency: 'CNY' } };
+  const a = M.cellOf('deepseek', d, { metric: 'today', show: 'cost' });
+  assert.strictEqual(a.text, '¥3.21'); assert.strictEqual(a.pct, null);
+  const b = M.cellOf('deepseek', d, { metric: 'today', show: 'cost', budget: 10 });
+  assert.strictEqual(b.text, '¥3.21'); assert.ok(close(b.pct, 32.14));
+  assert.strictEqual(M.cellOf('deepseek', d, { metric: 'last7', show: 'cost' }).text, '¥12.3');
+  assert.strictEqual(M.cellOf('deepseek', d, { metric: 'month', show: 'cost' }).text, '¥457');
+  assert.strictEqual(M.cellOf('deepseek', { summary: { today: 1234 } }, { metric: 'today', show: 'cost' }).text, '¥1.2k');
+  assert.strictEqual(M.cellOf('deepseek', { summary: { today: 0 } }, { metric: 'today', show: 'cost' }).text, '¥0.00');
+  assert.strictEqual(M.cellOf('deepseek', { summary: { today: 2 }, balance: { currency: 'USD' } }, { metric: 'today', show: 'cost' }).text, '$2.00');
+});
+ok('DeepSeek 金额：没有 summary / 值脏 → –', () => {
+  for (const d of [undefined, null, {}, { summary: null }, { summary: { today: null } }, { summary: { today: 'abc' } }]) {
+    assert.strictEqual(M.cellOf('deepseek', d, { show: 'cost' }).text, '–');
+  }
 });
 
 /* ---------------- ringColor ---------------- */

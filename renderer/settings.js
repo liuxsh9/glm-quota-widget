@@ -430,11 +430,14 @@
     const cur = DOCKM.normalize(pid, acc.dock);
     const opts = (metrics || []).map((m) =>
       `<option value="${esc(m.key)}"${m.key === cur.metric ? ' selected' : ''}>${esc(m.label)}</option>`).join('');
+    const shows = (DOCKM.SHOWS || []).map((x) =>
+      `<option value="${esc(x.key)}"${x.key === cur.show ? ' selected' : ''}>${esc(x.label)}</option>`).join('');
     const budget = pid === 'deepseek' ? `
+          <select class="dshow" aria-label="圆圈下显示">${shows}</select>
           <label class="dbudget"><span class="dcur" aria-hidden="true">¥</span><input type="text" inputmode="decimal" spellcheck="false" placeholder="${esc(budgetPlaceholder(cur.metric))}" value="${cur.budget == null ? '' : esc(String(cur.budget))}"></label>
-          <p class="dhint">未设预算时圆圈不显示百分比</p>` : '';
+          <p class="dhint">未设预算时圆圈不显示百分比，可改为显示金额</p>` : '';
     return `
-        <div class="dock-row${pid === 'deepseek' && cur.budget == null ? ' nobudget' : ''}" data-pid="${esc(pid)}" data-id="${esc(acc.id)}">
+        <div class="dock-row${pid === 'deepseek' && cur.budget == null && cur.show !== 'cost' ? ' nobudget' : ''}" data-pid="${esc(pid)}" data-id="${esc(acc.id)}">
           <span class="dlogo" aria-hidden="true">${(window.GLMLOGOS && window.GLMLOGOS[pid]) || ''}</span>
           <span class="dname">${esc(acc.name)}</span>
           ${metrics ? `<select class="dmetric" aria-label="圆圈口径">${opts}</select>` : ''}${budget}
@@ -452,7 +455,10 @@
       if (document.activeElement !== inp) inp.value = cur.budget == null ? '' : String(cur.budget);
       inp.placeholder = budgetPlaceholder(sel ? sel.value : cur.metric);
     }
-    el.classList.toggle('nobudget', !!inp && cur.budget == null);
+    const shw = el.querySelector('select.dshow');
+    if (shw && document.activeElement !== shw) shw.value = cur.show;
+    // 「未设预算」提示只在要显示百分比时才有意义：选了金额，没预算也照样有数
+    el.classList.toggle('nobudget', !!inp && cur.budget == null && (shw ? shw.value : cur.show) !== 'cost');
   }
 
   /** 重建整段（行集变了才调用）；没有启用账户时整段隐藏（含「圆圈大小」行） */
@@ -475,6 +481,8 @@
       // 金额框的 change（失焦 / 回车都会发）也保存；读的是当前下拉，所以改口径不会顺带清预算
       const inp = el.querySelector('.dbudget input');
       if (inp) inp.addEventListener('change', () => saveDockRow(el));
+      const shw = el.querySelector('select.dshow');
+      if (shw) shw.addEventListener('change', () => saveDockRow(el));
     });
   }
 
@@ -512,8 +520,9 @@
   async function saveDockRow(el) {
     const sel = el.querySelector('select.dmetric');
     const inp = el.querySelector('.dbudget input');
-    const cur = DOCKM.normalize(el.dataset.pid, { metric: sel ? sel.value : null, budget: inp ? inp.value : null });
-    const next = await window.glm.accDock({ id: el.dataset.id, metric: cur.metric, budget: cur.budget });
+    const shw = el.querySelector('select.dshow');
+    const cur = DOCKM.normalize(el.dataset.pid, { metric: sel ? sel.value : null, budget: inp ? inp.value : null, show: shw ? shw.value : null });
+    const next = await window.glm.accDock({ id: el.dataset.id, metric: cur.metric, budget: cur.budget, show: cur.show });
     if (next && !next.err) {
       const old = el.querySelector('.formerr');
       if (old) old.remove();                         // 这次成功了，上一次留下的报错收走

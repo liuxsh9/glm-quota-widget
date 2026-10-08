@@ -209,7 +209,7 @@ window.glm = {
   accDock: async (p) => { window.__dockSaved = p; window.__dockSaves.push(p);
     const acc = window.__state.config.accounts.find(x => x.id === p.id);
     if (!acc) return { err: '账户不存在' };
-    acc.dock = GLMDOCK.normalize(acc.provider, { metric: p.metric, budget: p.budget });
+    acc.dock = GLMDOCK.normalize(acc.provider, { metric: p.metric, budget: p.budget, show: p.show });
     const prov = window.__state.providers[acc.provider];
     const live = prov && prov.accounts.find(x => x.id === p.id);
     if (live) live.dock = acc.dock;
@@ -1103,7 +1103,7 @@ with sync_playwright() as p:
       "[...document.querySelectorAll('#settings .sech')].map(e => e.textContent).join('|')"
     ).endswith("通用|贴边圆圈"))
     t("一行说明（拖到左 / 右边缘松手变圆圈）", pg.text_content("#dockSec .hintline").strip() ==
-      "把胶囊拖到屏幕左 / 右边缘松手，会变成一列圆圈；这里设定每个圆圈显示哪个百分比",
+      "把胶囊拖到屏幕左 / 右边缘松手，会变成一列圆圈；这里设定每个圆圈显示什么（GLM 可选 5 小时 + 周双环，DeepSeek 可显示金额）",
       repr(pg.text_content("#dockSec .hintline")))
     t("段内恰好 3 行（三家各一个启用账户）", pg.locator("#dockRows .dock-row").count() == 3)
     t("停用的 GLM 账户不出现", pg.locator("#dockRows .dock-row[data-id='a2']").count() == 0)
@@ -1113,8 +1113,8 @@ with sync_playwright() as p:
       "[...document.querySelectorAll('#dockRows .dock-row')].map(e => e.dataset.pid + ':' + e.dataset.id).join()"))
     t("行里有账户名", pg.text_content("#dockRows .dock-row[data-id='a1'] .dname") == "主号"
       and pg.text_content("#dockRows .dock-row[data-id='v1'] .dname") == "火山")
-    t("GLM 下拉 2 项 / 火山 3 项 / DS 3 项",
-      pg.locator("#dockRows .dock-row[data-id='a1'] select.dmetric option").count() == 2
+    t("GLM 下拉 3 项（含双环）/ 火山 3 项 / DS 3 项",
+      pg.locator("#dockRows .dock-row[data-id='a1'] select.dmetric option").count() == 3
       and pg.locator("#dockRows .dock-row[data-id='v1'] select.dmetric option").count() == 3
       and pg.locator("#dockRows .dock-row[data-id='d1'] select.dmetric option").count() == 3)
     t("选项文案来自 METRICS（火山：5 小时额度 / 周额度 / 月额度）", pg.evaluate(
@@ -1148,7 +1148,7 @@ with sync_playwright() as p:
     pg.wait_for_function("window.__dockSaved && window.__dockSaved.id === 'a1'")
     pg.wait_for_timeout(80)
     t("改 GLM 口径为「周」→ accDock({id:'a1', metric:'week', budget:null})",
-      pg.evaluate("window.__dockSaved") == {"id": "a1", "metric": "week", "budget": None},
+      pg.evaluate("window.__dockSaved") == {"id": "a1", "metric": "week", "budget": None, "show": None},
       str(pg.evaluate("window.__dockSaved")))
     t("成功的口径保存闪出「已保存」", pg.locator("#saveTip").evaluate("e => e.classList.contains('show')"))
     t("落到了这个账户上（state 里 dock.metric）", pg.evaluate(
@@ -1161,7 +1161,7 @@ with sync_playwright() as p:
     pg.wait_for_function("window.__dockSaved && window.__dockSaved.id === 'd1'")
     pg.wait_for_timeout(80)
     t("输入 25 → 渲染层发出的是数字 25（不是字符串；断言的是发给主进程的负载，主进程还会再 normalize 一次）",
-      pg.evaluate("window.__dockSaved") == {"id": "d1", "metric": "today", "budget": 25}
+      pg.evaluate("window.__dockSaved") == {"id": "d1", "metric": "today", "budget": 25, "show": "pct"}
       and pg.evaluate("typeof window.__dockSaved.budget") == "number",
       str(pg.evaluate("window.__dockSaved")))
     t("落到了 DS 账户上（state 里 dock.budget=25）", pg.evaluate(
@@ -1190,21 +1190,21 @@ with sync_playwright() as p:
     pg.wait_for_function("window.__dockSaved && window.__dockSaved.id === 'd1'")
     pg.wait_for_function("document.querySelector(\"%s\").value === ''" % inp_sel)
     t("输入 0 → 保存为「未设预算」（normalize 后 budget=null）",
-      pg.evaluate("window.__dockSaved") == {"id": "d1", "metric": "today", "budget": None},
+      pg.evaluate("window.__dockSaved") == {"id": "d1", "metric": "today", "budget": None, "show": "pct"},
       str(pg.evaluate("window.__dockSaved")))
     t("state 里这个账户的预算回到 null", pg.evaluate(
       "window.__state.config.accounts.find(a => a.id === 'd1').dock.budget") is None)
     t("输入框清空", pg.eval_on_selector(inp_sel, "e => e.value") == "")
-    t("行内出现灰色提示「未设预算时圆圈不显示百分比」",
+    t("行内出现灰色提示「未设预算时圆圈不显示百分比，可改为显示金额」",
       pg.locator("#dockRows .dock-row[data-id='d1'] .dhint").is_visible()
-      and pg.text_content("#dockRows .dock-row[data-id='d1'] .dhint").strip() == "未设预算时圆圈不显示百分比")
+      and pg.text_content("#dockRows .dock-row[data-id='d1'] .dhint").strip() == "未设预算时圆圈不显示百分比，可改为显示金额")
     pg.evaluate("window.__dockSaved = null")
     pg.fill(inp_sel, "abc")
     pg.keyboard.press("Enter")
     pg.wait_for_function("window.__dockSaved && window.__dockSaved.id === 'd1'")
     pg.wait_for_function("document.querySelector(\"%s\").value === ''" % inp_sel)
     t("输入 abc → 同样存为「未设预算」、输入框清空、提示还在",
-      pg.evaluate("window.__dockSaved") == {"id": "d1", "metric": "today", "budget": None}
+      pg.evaluate("window.__dockSaved") == {"id": "d1", "metric": "today", "budget": None, "show": "pct"}
       and pg.eval_on_selector(inp_sel, "e => e.value") == ""
       and pg.locator("#dockRows .dock-row[data-id='d1'] .dhint").is_visible())
 
@@ -1252,7 +1252,7 @@ with sync_playwright() as p:
       str(pg.get_attribute(inp_sel, "placeholder")))
     pg.wait_for_function("window.__dockSaved && window.__dockSaved.metric === 'last7'")
     t("改口径不清预算：accDock 带上当前的 40",
-      pg.evaluate("window.__dockSaved") == {"id": "d1", "metric": "last7", "budget": 40},
+      pg.evaluate("window.__dockSaved") == {"id": "d1", "metric": "last7", "budget": 40, "show": "pct"},
       str(pg.evaluate("window.__dockSaved")))
     # 回显：state 里换成 {metric:'month', budget:40}（模拟别的来源改了配置）
     pg.evaluate("document.activeElement && document.activeElement.blur()")
@@ -1267,6 +1267,29 @@ with sync_playwright() as p:
       str(pg.eval_on_selector(inp_sel, "e => e.value")))
     t("回显：占位是本月那条（这笔钱对应哪个周期）", pg.get_attribute(inp_sel, "placeholder") == "本月预算")
     t("有预算 → 提示不显示", not pg.locator("#dockRows .dock-row[data-id='d1'] .dhint").is_visible())
+
+    print("贴边圆圈段 · DeepSeek「显示」：百分比 / 金额:")
+    show_sel = "#dockRows .dock-row[data-id='d1'] select.dshow"
+    t("只有 DeepSeek 行有「显示」下拉（百分比 / 金额，默认百分比）",
+      pg.locator("#dockRows select.dshow").count() == 1
+      and pg.evaluate(f"[...document.querySelectorAll(\"{show_sel} option\")].map(o => o.textContent).join()") == "百分比,金额"
+      and pg.eval_on_selector(show_sel, "e => e.value") == "pct")
+    pg.fill(inp_sel, "")           # 先清预算：金额模式不需要预算
+    pg.keyboard.press("Enter")
+    pg.wait_for_function("window.__dockSaved && window.__dockSaved.budget === null")
+    t("百分比 + 没预算 → 「未设预算」提示在", pg.locator("#dockRows .dock-row[data-id='d1'] .dhint").is_visible())
+    pg.evaluate("window.__dockSaved = null")
+    pg.select_option(show_sel, "cost")
+    pg.wait_for_function("window.__dockSaved && window.__dockSaved.show === 'cost'")
+    t("改「金额」→ accDock 带 show:'cost'（口径 / 预算原样）",
+      pg.evaluate("window.__dockSaved") == {"id": "d1", "metric": "month", "budget": None, "show": "cost"},
+      str(pg.evaluate("window.__dockSaved")))
+    pg.wait_for_timeout(80)
+    t("金额模式 → 没预算也不再提示「未设预算」", not pg.locator("#dockRows .dock-row[data-id='d1'] .dhint").is_visible())
+    t("落到账户上（state 里 dock.show=cost）", pg.evaluate(
+      "window.__state.config.accounts.find(a => a.id === 'd1').dock.show") == "cost")
+    pg.select_option(show_sel, "pct")
+    pg.wait_for_function("window.__dockSaved && window.__dockSaved.show === 'pct'")
 
     print("贴边圆圈段 · 「圆圈大小」下拉（config.dockScale）:")
     t("「圆圈大小」行在段顶部（口径行集之上）", pg.evaluate("""() => {
@@ -1614,9 +1637,9 @@ with sync_playwright() as p:
           getComputedStyle(el.querySelector('.dc-arc')).stroke]);
         const want = [['a1', GLMDOCK.ringColor(41)], ['a2', GLMDOCK.ringColor(78)], ['d1', GLMDOCK.ringColor(62)]];
         return got.length === 3 && want.every(([id, c], i) => got[i][0] === id && got[i][1] === c);
-      }"""), str(pg.evaluate("[...document.querySelectorAll('#dock .dc .dc-arc')].map(e => getComputedStyle(e).stroke)")))
+      }"""), str(pg.evaluate("[...document.querySelectorAll('#dock .dc .dc-arc:not(.dc-in)')].map(e => getComputedStyle(e).stroke)")))
     t("三圈弧色互不相同（跟着各自百分比走，不是写死一色）", pg.evaluate(
-      "new Set([...document.querySelectorAll('#dock .dc .dc-arc')].map(e => getComputedStyle(e).stroke)).size") == 3)
+      "new Set([...document.querySelectorAll('#dock .dc .dc-arc:not(.dc-in)')].map(e => getComputedStyle(e).stroke)).size") == 3)
     t("弧长按比例：41% / 78% 对应 dashoffset", pg.evaluate("""() => {
         const C = 2 * Math.PI * 18.25;
         const off = id => parseFloat(document.querySelector(`#dock .dc[data-acc-id='${id}'] .dc-arc`)
@@ -1710,6 +1733,34 @@ with sync_playwright() as p:
     settle(pg)
     t("回到预算内 → 62% 的淡黄绿", pg.text_content("#dock .dc[data-acc-id='d1'] .dc-pct") == "62%"
       and pg.evaluate("getComputedStyle(document.querySelector(\"#dock .dc[data-acc-id='d1'] .dc-arc\")).stroke === GLMDOCK.ringColor(62)"))
+    set_dev(pg, "s.providers.deepseek.accounts[0].dock = { metric: 'today', budget: null, show: 'cost' };")
+    settle(pg)
+    t("DeepSeek 金额 + 没预算 → 数字是今日消费 ¥12.4、只留底环", pg.text_content("#dock .dc[data-acc-id='d1'] .dc-pct") == "¥12.4"
+      and pg.evaluate("document.querySelector(\"#dock .dc[data-acc-id='d1']\").classList.contains('dc-none')"),
+      str(pg.text_content("#dock .dc[data-acc-id='d1'] .dc-pct")))
+    set_dev(pg, "s.providers.deepseek.accounts[0].dock = { metric: 'today', budget: 20, show: 'cost' };")
+    settle(pg)
+    t("DeepSeek 金额 + 有预算 → 数字仍是金额，弧按 62% 上色", pg.text_content("#dock .dc[data-acc-id='d1'] .dc-pct") == "¥12.4"
+      and pg.evaluate("getComputedStyle(document.querySelector(\"#dock .dc[data-acc-id='d1'] .dc-arc\")).stroke === GLMDOCK.ringColor(62)"))
+    set_dev(pg, "s.providers.deepseek.accounts[0].dock = { metric: 'today', budget: 20 };")
+    settle(pg)
+    t("单环口径：内环不显示", pg.evaluate("""() => [...document.querySelectorAll('#dock .dc .dc-in')]
+        .every(e => getComputedStyle(e).display === 'none')"""))
+    set_dev(pg, "s.providers.glm.accounts[0].dock = { metric: 'both', budget: null };")
+    settle(pg)
+    t("GLM 双环：外环 = 5h（41%，数字跟外环）、内环 = 周（7%）", pg.evaluate("""() => {
+        const el = document.querySelector("#dock .dc[data-acc-id='a1']");
+        const inner = el.querySelector('.dc-arc.dc-in'), outer = el.querySelector('.dc-arc:not(.dc-in)');
+        const frac = (a) => 1 - parseFloat(a.getAttribute('stroke-dashoffset')) / parseFloat(a.getAttribute('stroke-dasharray'));
+        return el.classList.contains('dc-dual') && getComputedStyle(inner).display !== 'none'
+          && Math.abs(frac(outer) - 0.41) < 0.01 && Math.abs(frac(inner) - 0.07) < 0.01
+          && getComputedStyle(inner).stroke === GLMDOCK.ringColor(7)
+          && el.querySelector('.dc-pct').textContent === '41%';
+      }"""), "")
+    pg.screenshot(path="/tmp/r_dock_dual.png")
+    set_dev(pg, "s.providers.glm.accounts[0].dock = { metric: 'five', budget: null };")
+    settle(pg)
+    t("切回单环 → 内环收起", pg.evaluate("""() => !document.querySelector("#dock .dc[data-acc-id='a1']").classList.contains('dc-dual')"""))
     set_dev(pg, "s.providers.glm.accounts[1].status = 'expired';")
     settle(pg)
     t("过期 → 灰环（弧色 = 主题里的中性灰变量，不是 ringColor 的彩色）+ 警示角标", pg.evaluate("""() => {

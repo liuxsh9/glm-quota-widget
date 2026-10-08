@@ -336,6 +336,8 @@ function syncCapsuleSize() {
    账户集合没变时**不重建**列：只更新环与数字 —— 否则状态每次推送（每秒都可能有）圆圈都会闪。 */
 const DOCK_R = 18.25;                 // 圆环半径：直径 40 − 环宽 3.5（SVG viewBox 内部单位，跟随 CSS 缩放）
 const DOCK_C = 2 * Math.PI * DOCK_R;  // 圆周长：进度弧的 dasharray
+const DOCK_R2 = 13.5;                 // 双环口径（GLM「5h + 周」）的内环半径：外环内沿 16.5 − 间隙 1.75 − 半环宽 1.25
+const DOCK_C2 = 2 * Math.PI * DOCK_R2;
 const DOCK_CORNER = 15;               // 主体圆角半径（× dockScale）：远端两角与贴边侧两处反向圆角**同一个 r**
 const DOCK_SMOOTH = 0.6;              // 连续曲率圆角的平滑度（Figma corner smoothing 同口径）：每个角沿两边
                                       // 各占 (1 + 0.6) × r = 24 —— 也就是贴边侧喇叭口沿屏幕边升起的高度
@@ -370,6 +372,9 @@ function dockCellHtml(pid, acc) {
     + `<circle class="dc-track" cx="20" cy="20" r="${DOCK_R}"></circle>`
     + `<circle class="dc-arc" cx="20" cy="20" r="${DOCK_R}"`
     + ` stroke-dasharray="${DOCK_C.toFixed(2)}" stroke-dashoffset="${DOCK_C.toFixed(2)}"></circle>`
+    + `<circle class="dc-track dc-in" cx="20" cy="20" r="${DOCK_R2}"></circle>`        // 内环：只有双环口径才显示
+    + `<circle class="dc-arc dc-in" cx="20" cy="20" r="${DOCK_R2}"`
+    + ` stroke-dasharray="${DOCK_C2.toFixed(2)}" stroke-dashoffset="${DOCK_C2.toFixed(2)}"></circle>`
     + `</svg>`
     + `<span class="dc-logo" aria-hidden="true">${(LOGOS && LOGOS[pid]) || ''}</span>`
     + `<i class="dc-badge">!</i>`
@@ -378,22 +383,29 @@ function dockCellHtml(pid, acc) {
     + `</div>`;
 }
 
-/** 只动环与数字（列结构没变时逐个更新，不重建节点） */
-function updateDockCell(node, pid, acc) {
-  const p = DOCKM.percentOf(pid, acc.data, acc.dock);
-  const warn = acc.status === 'expired' || acc.status === 'error';
-  const arc = node.querySelector('.dc-arc');
-  if (p) {
-    arc.setAttribute('stroke', DOCKM.ringColor(p.pct));   // 弧色：连续渐变（0–100 夹过的比例）
-    arc.setAttribute('stroke-dashoffset', (DOCK_C * (1 - p.pct / 100)).toFixed(2));
+/** 一条进度弧：有数 → 按比例长出来并上色；没数 → 收回去、去色（只留底环） */
+function setDockArc(arc, circ, pct) {
+  if (pct != null) {
+    arc.setAttribute('stroke', DOCKM.ringColor(pct));    // 弧色：连续渐变（0–100 夹过的比例）
+    arc.setAttribute('stroke-dashoffset', (circ * (1 - pct / 100)).toFixed(2));
   } else {
-    arc.removeAttribute('stroke');                        // 取不到数：不画弧，只留底环
-    arc.setAttribute('stroke-dashoffset', DOCK_C.toFixed(2));
+    arc.removeAttribute('stroke');
+    arc.setAttribute('stroke-dashoffset', circ.toFixed(2));
   }
-  node.classList.toggle('dc-none', !p);
+}
+
+/** 只动环与数字（列结构没变时逐个更新，不重建节点）。显示什么全由 GLMDOCK.cellOf 定：
+ *  弧长 / 内环（GLM 双环）/ 数字（百分比用未夹的 raw 讲真话；DeepSeek 可选金额） */
+function updateDockCell(node, pid, acc) {
+  const c = DOCKM.cellOf(pid, acc.data, acc.dock);
+  const warn = acc.status === 'expired' || acc.status === 'error';
+  const dual = DOCKM.normalize(pid, acc.dock).metric === 'both';
+  setDockArc(node.querySelector('.dc-arc:not(.dc-in)'), DOCK_C, c.pct);
+  setDockArc(node.querySelector('.dc-arc.dc-in'), DOCK_C2, dual && c.inner ? c.inner.pct : null);
+  node.classList.toggle('dc-none', c.pct == null);
+  node.classList.toggle('dc-dual', dual);
   node.classList.toggle('dc-warn', warn);                 // 过期 / 出错：灰环 + 角标
-  // 数字讲真话：用未夹的 raw —— DeepSeek 超预算时是 150% 而不是 100%
-  node.querySelector('.dc-pct').textContent = p ? Math.round(p.raw) + '%' : '–';
+  node.querySelector('.dc-pct').textContent = c.text;
 }
 
 /** 全停用 / 还没配账户时的空态：一个安静的虚线圆 + ⚙。贴边保留、不清配置 —— 重加账户时
@@ -599,16 +611,17 @@ let fxKey = '';                // 已渲染目标的指纹（pid:accId）；主�
 let fxReady = false;           // 卡片里有内容（没内容时量出来的尺寸不作数）
 const fxPanes = new Map();     // pid → 飞出窗自己的 pane 实例（缓存，换回来不必重建）
 
-/** 头部一行：GLM · 主号 · 5h 41%（百分比与圆圈同一份算法，数字同样用未夹的 raw 讲真话） */
+/** 头部一行：GLM · 主号 · 5h 41%（与圆圈同一份 cellOf：DeepSeek 选了金额就写金额；双环补上周） */
 function fxTitle(pid, acc, prov) {
   const norm = DOCKM.normalize(pid, acc.dock);
-  const p = DOCKM.percentOf(pid, acc.data, acc.dock);
-  const list = Object.prototype.hasOwnProperty.call(DOCKM.METRICS, pid) ? DOCKM.METRICS[pid] : null;
-  const item = (norm.metric && list) ? list.find((m) => m.key === norm.metric) : null;
+  const c = DOCKM.cellOf(pid, acc.data, acc.dock);
   const parts = [prov.tab || pid, acc.name];
-  if (p) parts.push(`${item ? item.short : norm.metric} ${Math.round(p.raw)}%`);
-  else if (BUDGET_METRIC.has(pid) && !norm.budget) parts.push('未设预算 · 在设置里填');
-  else parts.push(item ? `${item.short} –` : '–');
+  if (c.text !== '–') {
+    let t = `${c.short || norm.metric} ${c.text}`;
+    if (c.inner) t += ` · 周 ${Math.round(c.inner.raw)}%`;
+    parts.push(t);
+  } else if (BUDGET_METRIC.has(pid) && !norm.budget && norm.show !== 'cost') parts.push('未设预算 · 在设置里填');
+  else parts.push(c.short ? `${c.short} –` : '–');
   return parts.join(' · ');
 }
 

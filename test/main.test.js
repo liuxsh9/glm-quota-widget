@@ -752,25 +752,34 @@ async function bootOnly(dir) {
   const rDs = await call('acc:dock', { id: dsId2, metric: 'last7', budget: '30' });
   const dDs = dockOf(rDs, dsId2);
   t('DeepSeek 存 {metric:"last7", budget:"30"} → {metric:"last7", budget:30}（字符串预算转数字）',
-    JSON.stringify(dDs.cfg) === '{"metric":"last7","budget":30}', JSON.stringify(dDs));
+    JSON.stringify(dDs.cfg) === '{"metric":"last7","budget":30,"show":"pct"}', JSON.stringify(dDs));
   t('config 与 providers 两份视图口径一致', JSON.stringify(dDs.prov) === JSON.stringify(dDs.cfg));
 
   const rGlm = await call('acc:dock', { id: glmId, metric: 'bogus', budget: '50' });
   t('GLM 存认不出的 metric → 回默认 five；budget 对 GLM 恒为 null（口径表里没有预算这回事）',
-    JSON.stringify(dockOf(rGlm, glmId).cfg) === '{"metric":"five","budget":null}', JSON.stringify(dockOf(rGlm, glmId)));
+    JSON.stringify(dockOf(rGlm, glmId).cfg) === '{"metric":"five","budget":null,"show":null}', JSON.stringify(dockOf(rGlm, glmId)));
+
+  const rShow = await call('acc:dock', { id: dsId2, metric: 'last7', budget: 30, show: 'cost' });
+  t('DeepSeek 存 show:"cost"（圆圈下显示金额）→ 原样落到账户上',
+    dockOf(rShow, dsId2).cfg.show === 'cost', JSON.stringify(dockOf(rShow, dsId2)));
+  await call('acc:dock', { id: dsId2, metric: 'last7', budget: 30, show: 'bogus' });
+  t('认不出的 show → 回默认 pct', dockOf(await state(), dsId2).cfg.show === 'pct');
+  const rGlmBoth = await call('acc:dock', { id: glmId, metric: 'both' });
+  t('GLM 存 metric:"both"（5h + 周双环）', dockOf(rGlmBoth, glmId).cfg.metric === 'both');
+  await call('acc:dock', { id: glmId, metric: 'five' });
 
   const rBad = await call('acc:dock', { id: '不存在的账户', metric: 'five' });
   t('未知 id → {err}', !!rBad.err, JSON.stringify(rBad));
 
   t('口径已落盘（重启后按它画圆圈）',
-    JSON.stringify((readCfg().accounts.find((a) => a.id === dsId2) || {}).dock) === '{"metric":"last7","budget":30}',
+    JSON.stringify((readCfg().accounts.find((a) => a.id === dsId2) || {}).dock) === '{"metric":"last7","budget":30,"show":"pct"}',
     JSON.stringify((readCfg().accounts.find((a) => a.id === dsId2) || {}).dock));
 
   await call('acc:update', { id: dsId2, name: '改过名的口径号' });
   const stRenamed = await state();
   t('accUpdate 改名后 dock 口径仍在（且仍是落盘的那份）',
-    JSON.stringify(dockOf(stRenamed, dsId2).cfg) === '{"metric":"last7","budget":30}'
-    && JSON.stringify((readCfg().accounts.find((a) => a.id === dsId2) || {}).dock) === '{"metric":"last7","budget":30}',
+    JSON.stringify(dockOf(stRenamed, dsId2).cfg) === '{"metric":"last7","budget":30,"show":"pct"}'
+    && JSON.stringify((readCfg().accounts.find((a) => a.id === dsId2) || {}).dock) === '{"metric":"last7","budget":30,"show":"pct"}',
     JSON.stringify(dockOf(stRenamed, dsId2)));
 
   console.log('\n贴边时拖动面板 / 设置：松手那一拍不弹回（尺寸对齐推迟到下一次布局）:');
@@ -1038,8 +1047,8 @@ async function bootOnly(dir) {
   });
   t('启动时规范化账户的圆圈口径（认不出的回默认 / 预算转数字）',
     JSON.stringify(b4.accounts) === JSON.stringify([
-      { id: 'g1', dock: { metric: 'five', budget: null } },
-      { id: 'd1', dock: { metric: 'month', budget: 12.5 } },
+      { id: 'g1', dock: { metric: 'five', budget: null, show: null } },
+      { id: 'd1', dock: { metric: 'month', budget: 12.5, show: 'pct' } },
     ]), JSON.stringify(b4.accounts));
 
   // dockScale 落盘重启后仍在；磁盘上被手改成坏值（不在 [0.6,1.6]）时按 1 下发
