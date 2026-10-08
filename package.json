@@ -16,6 +16,8 @@
     "start": "electron .",
     "test:usage": "node test/usage.test.js",
     "test:drag": "node test/drag.test.js",
+    "test:dock": "node test/dock.test.js",
+    "test:dock-metric": "node test/dock-metric.test.js",
     "test:renderer": "python3 test/renderer.test.py",
     "icon": "node tools/gen-icon.js",
     "dist:win": "electron-builder --win nsis portable",
