@@ -228,7 +228,9 @@ body.view-dock #dock { display: flex; }
 
 #dock {
   position: relative; flex-direction: column; align-items: center;
-  gap: calc(10px * var(--ds)); padding: calc(16px * var(--ds)) calc(12px * var(--ds));
+  gap: calc(10px * var(--ds)); padding: calc(26px * var(--ds)) calc(12px * var(--ds));
+  /* 上下留白 26（= 渲染层 DOCK_RISE）：凹弧从身体顶/底边升起切进屏幕边的形变空间。
+     16 太挤 ——「底框离圆圈太近，看不出吸附」（用户实测反馈）。 */
   width: max-content; height: max-content;   /* 尺寸由内容定，渲染层实测后上报 */
   border: 0; border-radius: 0;               /* 形状全归 clip-path，避免和 border-radius 打架 */
   --ds: 1;                                   /* 圆圈缩放（config.dockScale）：这里所有尺寸都乘它 */

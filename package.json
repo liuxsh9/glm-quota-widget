@@ -1,7 +1,7 @@
 {
   "name": "glm-quota-widget",
   "productName": "GLM 用量挂件",
-  "version": "0.8.1",
+  "version": "0.8.2",
   "description": "用量悬浮挂件：多账户监控 GLM Coding Plan 5小时/周配额 + DeepSeek 官方 API 余额/消费，provider 可扩展，托盘常驻",
   "main": "main.js",
   "author": "liuxsh9",
@@ -36,15 +36,40 @@
   "build": {
     "appId": "cn.bigmodel.glmusage",
     "productName": "GLM-Usage-Widget",
-    "directories": { "output": "dist", "buildResources": "build" },
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
     "afterPack": "build/afterPack.js",
     "afterAllArtifactBuild": "build/afterArtifacts.js",
-    "electronLanguages": ["zh-CN", "en-US"],
-    "files": ["main.js", "preload.js", "lib/**", "renderer/**", "assets/*.png"],
+    "electronLanguages": [
+      "zh-CN",
+      "en-US"
+    ],
+    "files": [
+      "main.js",
+      "preload.js",
+      "lib/**",
+      "renderer/**",
+      "assets/*.png"
+    ],
     "win": {
       "icon": "build/icon.png",
       "signAndEditExecutable": false,
-      "target": [{ "target": "nsis", "arch": ["x64"] }, { "target": "portable", "arch": ["x64"] }]
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
     },
     "nsis": {
       "oneClick": false,

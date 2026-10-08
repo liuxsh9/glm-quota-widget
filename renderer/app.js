@@ -336,7 +336,11 @@ function syncCapsuleSize() {
    账户集合没变时**不重建**列：只更新环与数字 —— 否则状态每次推送（每秒都可能有）圆圈都会闪。 */
 const DOCK_R = 18.25;                 // 圆环半径：直径 40 − 环宽 3.5（SVG viewBox 内部单位，跟随 CSS 缩放）
 const DOCK_C = 2 * Math.PI * DOCK_R;  // 圆周长：进度弧的 dasharray
-const DOCK_SHOULDER = 12;             // 肩弧半径：贴边侧上下两端从身体 flare 到屏幕边的凹弧（× dockScale）
+const DOCK_RISE = 26;                 // 贴边侧凹弧的进深/升高（× dockScale），与贴边列上下留白同值：
+                                      // 凹弧从身体顶/底边升起、以**竖直切线**切进屏幕边，曲率两端归零
+                                      // （G2 曲率连续，见 dockPathData）；留白就是这条弧的形变空间
+const DOCK_RISE_M = 0.35;             // 凹弧饱满度：对角点距角的比例（越小越贴边、越大越饱满）
+const DOCK_RISE_A = 0.27;             // 进入凹弧前的平缓段长度（相对进深）
 const DOCK_CORNER = 15;               // 远离屏幕一侧的正常圆角（与 .glass 的 15px 一致，× dockScale）
 
 /** 这一列画哪些圆圈：provider 注册表序 → 每家的账户原序 → 只留启用的 */
@@ -441,7 +445,11 @@ function renderDock(s) {
   }
   const nodes = host.querySelectorAll('.dc');
   cells.forEach(({ pid, acc }, i) => { if (nodes[i]) updateDockCell(nodes[i], pid, acc); });
-  applyDockShape();
+  // 刚进贴边（上一拍还不是）→ 播吸附入场动画（凹弧收口）；其余情形只对齐造型
+  const nowDock = s.view === 'dock';
+  const entering = nowDock && !dockVisible;
+  dockVisible = nowDock;
+  if (entering) dockAnimateIn(); else applyDockShape();
   syncDockSize();
 }
 
@@ -453,20 +461,41 @@ function renderDock(s) {
    角上是空的）。同一个 d 既当裁剪（clip-path，让 .glass 的配色 / 噪点正好铺满这个形状）
    又当描边（.dock-edge path），所以背景与描边完全同形。左右镜像（sweep 标志取反）。
    所有参数（f / R）乘 dockScale —— 圆圈大小与肩弧一起缩放，形状比例不变。 */
-function dockPathData(w, h, side, s) {
-  const f = DOCK_SHOULDER * s, R = DOCK_CORNER * s, n = (v) => Math.round(v * 100) / 100;
-  if (side === 'left') {          // 贴左边：屏幕边是 x=0，(0,0) 就是屏幕边缘上的上角
-    return `M ${n(f)} 0 H 0 V ${n(h)} H ${n(f)}`                       // 上舌部 → 左侧边（贯通整高）→ 下舌部
-      + ` A ${n(f)} ${n(f)} 0 0 1 ${n(2 * f)} ${n(h - f)}`             // 下端肩弧：flare 到身体底边
-      + ` H ${n(w - R)} A ${R} ${R} 0 0 0 ${n(w)} ${n(h - f - R)}`     // 身体底边 → 远端下角
-      + ` V ${n(f + R)} A ${R} ${R} 0 0 0 ${n(w - R)} ${n(f)}`         // 远端边 → 远端上角
-      + ` H ${n(2 * f)} A ${n(f)} ${n(f)} 0 0 1 ${n(f)} 0 Z`;          // 身体顶边 → 上端肩弧
+/** 贴边列造型（G2 曲率连续的反向圆角，用户 2026-10-08 明确要求）：
+ *  贴边侧不再与屏幕边「90° 垂直拼接」——身体顶/底边从距屏幕边 e 处起，用**两段对称三次曲线**
+ *  的凹弧升起、以竖直切线切进屏幕边；曲线两端与直边曲率归零、两段接合处曲率严格相等，
+ *  全程无曲率跳变（G2）。贴边侧仍贯通整高（y 0→h 都是材料）。
+ *  k 是「形变量」（1 = 稳定态；0.12 左右 = 刚吸附、凹弧还没长出来的入场起点，同结构可插值）。 */
+function dockPathData(w, h, side, s, k = 1) {
+  const e = DOCK_RISE * s * k, R = DOCK_CORNER * s;
+  const m = e * DOCK_RISE_M, a = e * DOCK_RISE_A;
+  const n = (v) => Math.round(v * 100) / 100;
+  if (side === 'left') {          // 贴左边：屏幕边是 x=0
+    return `M ${n(w - R)} ${n(e)}`
+      + ` H ${n(e)}`
+      + ` C ${n(e - a)} ${n(e)} ${n(2 * m)} ${n(e)} ${n(m)} ${n(e - m)}`   // 身体顶边 → 凹弧升起
+      + ` C 0 ${n(e - 2 * m)} 0 ${n(a)} 0 0`                              // 竖直切线切进屏幕边（曲率归零）
+      + ` V ${n(h)}`
+      + ` C 0 ${n(h - a)} 0 ${n(h - 2 * m)} ${n(m)} ${n(h - m)}`          // 屏幕边 → 凹弧降回身体底边
+      + ` C ${n(2 * m)} ${n(h - e)} ${n(e - a)} ${n(h - e)} ${n(e)} ${n(h - e)}`
+      + ` H ${n(w - R)}`
+      + ` A ${R} ${R} 0 0 0 ${n(w)} ${n(h - e - R)}`                      // 远端下角（镜像：sweep 翻转）
+      + ` V ${n(e + R)}`
+      + ` A ${R} ${R} 0 0 0 ${n(w - R)} ${n(e)}`                          // 远端上角（镜像：sweep 翻转）
+      + ` Z`;
   }
-  return `M ${n(w - f)} 0 H ${n(w)} V ${n(h)} H ${n(w - f)}`           // 贴右边：屏幕边是 x=w
-    + ` A ${n(f)} ${n(f)} 0 0 0 ${n(w - 2 * f)} ${n(h - f)}`            // 下端肩弧：flare 到身体底边
-    + ` H ${n(R)} A ${R} ${R} 0 0 1 0 ${n(h - f - R)}`
-    + ` V ${n(f + R)} A ${R} ${R} 0 0 1 ${n(R)} ${n(f)}`
-    + ` H ${n(w - 2 * f)} A ${n(f)} ${n(f)} 0 0 0 ${n(w - f)} 0 Z`;     // 身体顶边 → 上端肩弧
+  return `M ${n(R)} ${n(e)}`      // 贴右边：屏幕边是 x=w
+    + ` H ${n(w - e)}`
+    + ` C ${n(w - e + a)} ${n(e)} ${n(w - 2 * m)} ${n(e)} ${n(w - m)} ${n(e - m)}`
+    + ` C ${n(w)} ${n(e - 2 * m)} ${n(w)} ${n(a)} ${n(w)} 0`
+    + ` V ${n(h)}`
+    + ` C ${n(w)} ${n(h - a)} ${n(w)} ${n(h - 2 * m)} ${n(w - m)} ${n(h - m)}`
+    + ` C ${n(w - 2 * m)} ${n(h - e)} ${n(w - e + a)} ${n(h - e)} ${n(w - e)} ${n(h - e)}`
+    + ` H ${n(R)}`
+    + ` A ${R} ${R} 0 0 1 0 ${n(h - e - R)}`
+    + ` V ${n(e + R)}`
+    + ` A ${R} ${R} 0 0 1 ${n(R)} ${n(e)}`
+    + ` Z`;
 }
 
 /** 圆圈缩放（config.dockScale）：主进程下发前已按 [0.6, 1.6] 规范化，这里再兜一层，认不出的按 1 */
@@ -477,7 +506,10 @@ function dockScaleOf(s) {
 
 /** 把当前实测尺寸 / 贴边侧 / 缩放落到造型上（三者都没变就不重复写 DOM） */
 let lastDockShape = '';
+let dockVisible = false;   // 上一拍贴边列是否可见（用来判断「刚吸附上」→ 播入场动画）
+let dockAnim = 0;          // 入场动画的 rAF 句柄（0 = 不在动画中）
 function applyDockShape() {
+  if (dockAnim) return;                         // 入场动画进行中：形状归动画循环管
   const el = $('#dock');
   if (!el) return;
   const rect = el.getBoundingClientRect();
@@ -488,10 +520,38 @@ function applyDockShape() {
   const key = `${side}:${w}x${h}:${s}`;
   if (key === lastDockShape) return;
   lastDockShape = key;
-  const d = dockPathData(w, h, side, s);
+  commitDockShape(el, dockPathData(w, h, side, s));
+}
+
+/** 把一条轮廓落到裁剪与描边上（两者同形） */
+function commitDockShape(el, d) {
   el.style.clipPath = `path("${d}")`;
   const path = el.querySelector('.dock-edge path');
-  if (path) path.setAttribute('d', d);
+  if (path) { path.setAttribute('d', d); path.style.d = `path("${d}")`; }
+}
+
+/** 吸附入场动画：凹弧从「还没长出来」（k=0.12）长到最终形 —— 像被屏幕边吸住、玻璃收口。
+ *  用 rAF 逐帧重算 k（每帧按当前实测尺寸重新生成路径，缩放/尺寸变化也跟得上）。 */
+function dockAnimateIn() {
+  const el = $('#dock');
+  if (!el) return;
+  cancelAnimationFrame(dockAnim);
+  const t0 = performance.now(), DUR = 320;
+  const frame = (now) => {
+    const k = Math.min(1, (now - t0) / DUR);
+    const ease = 1 - Math.pow(1 - k, 3);                       // ease-out：先快后慢，收口稳定
+    const rect = el.getBoundingClientRect();
+    if (rect.width && rect.height) {
+      const side = (st && st.config && st.config.dockSide) === 'left' ? 'left' : 'right';
+      const s = dockScaleOf(st);
+      commitDockShape(el, dockPathData(Math.round(rect.width), Math.round(rect.height), side, s, 0.12 + 0.88 * ease));
+    }
+    if (k < 1) { dockAnim = requestAnimationFrame(frame); return; }
+    dockAnim = 0;
+    lastDockShape = '';                                        // 收尾后重挂缓存（下一次 applyDockShape 对齐到同一形）
+    applyDockShape();
+  };
+  dockAnim = requestAnimationFrame(frame);
 }
 
 /* ---------- 贴边列尺寸上报 ----------

@@ -1,0 +1,259 @@
+<!doctype html>
+<!-- 贴边「流体融合吸附」原型（预览用，不进产品）。由 tools/goo_preview.py 截图。
+     重点（用户 2026-10-08 明确）：吸附完成后的**贴合形态**——与屏幕边缘的衔接要是
+     **G2（曲率连续）的反向圆角**：不是 90° 直角拼接，也不是四分之一圆（曲率恒定的圆弧
+     与直边之间是曲率跳变，观感就是「切掉一块」）。
+     实现：贴边侧上下各一段凹弧，用**两段对称三次曲线**拼成：
+        · 起点（接顶边）：P0,P1,P2 共线 → 曲率 = 0，与直边曲率连续（G2）；
+        · 接合点（对角线上）：两条曲线互为镜像 → 切线、曲率都严格相等（G2）；
+        · 终点（接屏边）：同理曲率 = 0。
+     数值已验证（经理侧）：端点曲率 ≈ 0.0001、接合点两侧 0.0041/0.0041；对照的四分之一圆
+     恒为 1/r（f=19 时 0.0526）——跳变即视觉上那道「接缝」。
+     上排 = 由远及近（液滴 → 液桥）；下排 = 贴合收口四选一（对照 + G2 三档大小）。
+     圆圈与配色复用产品真件：../lib/dock-metric.js（环色）、../renderer/logos.js（logo）。 -->
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>贴边 · 流体融合吸附（原型）</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font: 13px/1.5 -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+    color: #e6e9f2; min-height: 100vh; display: flex; align-items: center; justify-content: center;
+    background:
+      radial-gradient(120% 90% at 18% 8%, #2b3350 0%, transparent 55%),
+      radial-gradient(90% 80% at 85% 90%, #3a2a4d 0%, transparent 60%),
+      linear-gradient(160deg, #1a1f30 0%, #10131d 100%);
+  }
+  .sheet { display: flex; flex-direction: column; gap: 16px; padding: 26px 30px; }
+  .row { display: flex; gap: 26px; align-items: flex-start; }
+  .cell { display: flex; flex-direction: column; gap: 8px; }
+
+  .stage { position: relative; width: 300px; height: 420px; overflow: hidden; border-radius: 10px;
+           background: linear-gradient(200deg, #20263a 0%, #141827 60%, #0f121c 100%);
+           box-shadow: inset 0 0 0 1px rgba(255,255,255,.06); }
+  .stage .screenedge { position: absolute; top: 0; bottom: 0; right: 0; width: 2px;
+           background: linear-gradient(180deg, rgba(150,170,230,.40), rgba(150,170,230,.14)); }
+
+  .zoombox { position: relative; width: 380px; height: 380px; overflow: hidden; border-radius: 10px;
+             box-shadow: inset 0 0 0 1px rgba(255,255,255,.06); background: #0f121c; }
+  .zoombox .stage { position: absolute; right: 0; top: 0; transform-origin: 100% 0%; transform: scale(3.2); }
+
+  .solids { filter: drop-shadow(0 10px 22px rgba(0,0,0,.5)); }
+  .solids .fill { fill: #4b5675; }            /* 不透明玻璃色：形状边缘清晰 */
+
+  .content { position: absolute; display: flex; flex-direction: column; align-items: center;
+             justify-content: center; gap: 14px; }
+
+  .dc { display: flex; flex-direction: column; align-items: center; gap: 4px; }
+  .dc-top { position: relative; width: 56px; height: 56px; }
+  .dc-ring { display: block; width: 56px; height: 56px; }
+  .dc-ring .track { fill: none; stroke: rgba(255,255,255,.16); stroke-width: 3.5; }
+  .dc-ring .arc { fill: none; stroke-width: 3.5; stroke-linecap: round;
+                  transform-box: view-box; transform-origin: 50% 50%; transform: rotate(-90deg); }
+  .dc-logo { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: #eef1f7; }
+  .dc-logo svg { display: block; width: 25px; height: 25px; }
+  .dc-pct { font-size: 14px; color: #cdd5e8; font-variant-numeric: tabular-nums; }
+
+  .cap { color: #b9c2d8; font-size: 12.5px; text-align: center; }
+  .cap b { color: #eef1f7; }
+  .cap-row { color: #8b93a8; font-size: 12.5px; margin: 2px 0 -4px; }
+  .note { position: fixed; left: 50%; bottom: 12px; transform: translateX(-50%); color: #8b93a8; font-size: 12px; }
+</style>
+</head>
+<body>
+<div class="sheet" id="sheet"></div>
+<p class="note">tools/dockgoo.html · 上排 = 由远及近（液滴 → 液桥）；下排 = 贴合收口 ×3.2 特写（G2 = 曲率连续反向圆角）</p>
+
+<script src="../lib/dock-metric.js"></script>
+<script src="../renderer/logos.js"></script>
+<script>
+(function () {
+  const P = new URLSearchParams(location.search);
+  const S = 1.45;
+  const STAGE_W = 300, STAGE_H = 420;
+  const PANEL_W = Math.round(64 * S);
+  const PAD_Y = Math.round(26 * S);            // 上下留白（用户提醒：加大，给吸附凹弧腾空间）
+  const ROW_H = 56 + 4 + 20;
+  const PANEL_H = Math.round(2 * PAD_Y + 3 * ROW_H + 2 * 14);
+  const PANEL_TOP = Math.round((STAGE_H - PANEL_H) / 2);
+  const CY = STAGE_H / 2;
+  const BAR_W = Math.round(7 * S);
+  const BAR_LEFT = STAGE_W - BAR_W;
+  const RING_R = 18.25, RING_BOX = 40, DASH = 2 * Math.PI * RING_R;
+  const n = (v) => Math.round(v * 100) / 100;
+
+  /** 贴合后的完整轮廓（右侧贴边）：远端正常圆角；贴边侧上下各一段凹弧收口。
+   *  prof.arc=true 用四分之一圆（对照组 = 现在正式版的做法）；
+   *  否则用 G2 两段对称三次曲线：
+   *    右上凹弧：从顶边 (w-f, 0) 收到屏边 (w, f)——
+   *      cubic1: 控制点 P1 沿顶边、P2 也在顶边线上（P0,P1,P2 共线 ⇒ 起点曲率 = 0）
+   *              → 到对角线上的接合点 (w-m, m)；
+   *      cubic2: 控制点是 cubic1 关于对角线的镜像（⇒ 接合点切线、曲率严格相等）
+   *              → 收到 (w, f)，末端曲率 = 0。
+   *  右下凹弧按 h 镜像。参数：f = 凹弧的水平进深；m = 对角线上的饱满度（越小越贴边、越大越饱满）；
+   *  a = 进入弧之前的平缓段长度。 */
+  function mergedPath(w, h, prof) {
+    const R = Math.round(16 * S);
+    const f = prof.f * S, m = prof.m * S, a = prof.a * S, arc = !!prof.arc;
+    let d = `M ${n(R)} 0`;
+    if (arc) {
+      d += ` H ${n(w - f)} A ${n(f)} ${n(f)} 0 0 0 ${n(w)} ${n(f)}`;                       // 右上：四分之一圆
+      d += ` V ${n(h - f)} A ${n(f)} ${n(f)} 0 0 0 ${n(w - f)} ${n(h)}`;                   // 右下
+    } else {
+      d += ` H ${n(w - f)}`
+        + ` C ${n(w - f + a)} 0 ${n(w - 2 * m)} 0 ${n(w - m)} ${n(m)}`
+        + ` C ${n(w)} ${n(2 * m)} ${n(w)} ${n(f - a)} ${n(w)} ${n(f)}`
+        + ` V ${n(h - f)}`
+        + ` C ${n(w)} ${n(h - f + a)} ${n(w)} ${n(h - 2 * m)} ${n(w - m)} ${n(h - m)}`
+        + ` C ${n(w - 2 * m)} ${n(h)} ${n(w - f + a)} ${n(h)} ${n(w - f)} ${n(h)}`;
+    }
+    d += ` H ${n(R)}`
+      + ` A ${R} ${R} 0 0 1 0 ${n(h - R)}`
+      + ` V ${n(R)}`
+      + ` A ${R} ${R} 0 0 1 ${n(R)} 0 Z`;
+    return d;
+  }
+
+  /** 贴合收口四选一：对照（四分之一圆）+ G2 三档 */
+  const PROFILES = [
+    { name: '对照 · 四分之一圆（现在的做法）', f: 14, arc: true },
+    { name: 'G2 · 小', f: 14, m: 4.6, a: 4 },
+    { name: 'G2 · 中', f: 19, m: 6.4, a: 5.5 },
+    { name: 'G2 · 大', f: 26, m: 9,   a: 7 },
+  ];
+
+  /* ---------- 靠近过程：液滴 → 液桥（预吸附时的形变） ---------- */
+  function bridge(gap) {
+    const t = Math.max(0, Math.min(1, (60 - gap) / 56));
+    const ease = t * t * (3 - 2 * t);
+    const panelRight = STAGE_W - gap * S;
+    const gapPx = BAR_LEFT - panelRight;
+    const reach = (6 + 34 * ease) * S;
+    const touch = reach >= gapPx - 1;
+    return { t, ease, panelRight, gapPx, reach, touch,
+      ryNear: (22 + 34 * ease) * S, ryFar: (10 + 46 * ease) * S, waist: 0.55 + 0.20 * ease };
+  }
+  function lobePath(g) {
+    const { panelRight: px, reach, ryNear: ry } = g;
+    return `M ${n(px)} ${n(CY - ry)} A ${n(reach)} ${n(ry)} 0 0 1 ${n(px)} ${n(CY + ry)} Z`;
+  }
+  function bridgePath(g) {
+    const { panelRight: px, reach, ryNear: ryN, ryFar: ryF, waist } = g;
+    const bx = Math.min(BAR_LEFT + 2, px + reach);
+    const span = Math.max(8, bx - px);
+    const rW = ryN * waist, mid = px + span * 0.5, k1 = span * 0.30, k2 = span * 0.22;
+    return `M ${n(px)} ${n(CY - ryN)}`
+      + ` C ${n(px + k1)} ${n(CY - ryN)} ${n(mid - k2)} ${n(CY - rW)} ${n(mid)} ${n(CY - rW)}`
+      + ` C ${n(mid + k2)} ${n(CY - rW)} ${n(bx - k1)} ${n(CY - ryF)} ${n(bx)} ${n(CY - ryF)}`
+      + ` L ${n(bx)} ${n(CY + ryF)}`
+      + ` C ${n(bx - k1)} ${n(CY + ryF)} ${n(mid + k2)} ${n(CY + rW)} ${n(mid)} ${n(CY + rW)}`
+      + ` C ${n(mid - k2)} ${n(CY + rW)} ${n(px + k1)} ${n(CY + ryN)} ${n(px)} ${n(CY + ryN)} Z`;
+  }
+
+  function ring(pid, pct) {
+    const color = window.GLMDOCK.ringColor(pct);
+    const logo = (window.GLMLOGOS && window.GLMLOGOS[pid]) || '';
+    return `<div class="dc"><div class="dc-top">
+      <svg class="dc-ring" viewBox="0 0 ${RING_BOX} ${RING_BOX}">
+        <circle class="track" cx="20" cy="20" r="${RING_R}"></circle>
+        <circle class="arc" cx="20" cy="20" r="${RING_R}" stroke="${color}"
+          stroke-dasharray="${DASH.toFixed(2)}" stroke-dashoffset="${(DASH * (1 - pct / 100)).toFixed(2)}"></circle>
+      </svg>
+      <span class="dc-logo">${logo}</span></div><b class="dc-pct">${pct}%</b></div>`;
+  }
+
+  /** 靠近帧：贴边条 + 液滴/液桥 + 面板 */
+  function buildStage(gap) {
+    const g = bridge(gap);
+    const panelX = g.panelRight - PANEL_W;
+    const stage = document.createElement('div');
+    stage.className = 'stage';
+    stage.innerHTML = `
+      <div class="screenedge"></div>
+      <svg class="shapes" viewBox="0 0 ${STAGE_W} ${STAGE_H}" preserveAspectRatio="none"
+           style="position:absolute;inset:0;width:100%;height:100%">
+        <g class="solids">
+          <rect class="fill" x="${BAR_LEFT}" y="-40" width="${BAR_W + 16}" height="${STAGE_H + 80}" rx="${n(BAR_W / 2)}"></rect>
+          <path class="fill" d="${g.touch ? bridgePath(g) : lobePath(g)}"></path>
+          <rect class="fill" x="${n(panelX)}" y="${PANEL_TOP}" width="${PANEL_W}" height="${PANEL_H}" rx="${Math.round(16 * S)}"></rect>
+        </g>
+      </svg>
+      <div class="content" style="left:${n(panelX)}px; top:${PANEL_TOP}px; width:${PANEL_W}px; height:${PANEL_H}px">
+        ${ring('glm', 41)}${ring('glm', 78)}${ring('deepseek', 62)}
+      </div>`;
+    return stage;
+  }
+
+  /** 贴合帧：一条 G2 轮廓吃下「面板 + 屏边」 */
+  function buildMerged(prof) {
+    const stage = document.createElement('div');
+    stage.className = 'stage';
+    stage.innerHTML = `
+      <div class="screenedge"></div>
+      <svg class="shapes" viewBox="0 0 ${STAGE_W} ${STAGE_H}" preserveAspectRatio="none"
+           style="position:absolute;inset:0;width:100%;height:100%">
+        <g class="solids">
+          <g transform="translate(${STAGE_W - PANEL_W - BAR_W}, 0)">
+            <path class="fill" d="${mergedPath(PANEL_W + BAR_W, PANEL_H, prof)}"></path>
+          </g>
+        </g>
+      </svg>
+      <div class="content" style="left:${STAGE_W - PANEL_W - BAR_W}px; top:${PANEL_TOP}px; width:${PANEL_W}px; height:${PANEL_H}px">
+        ${ring('glm', 41)}${ring('glm', 78)}${ring('deepseek', 62)}
+      </div>`;
+    return stage;
+  }
+
+  function cell(inner, capHtml) {
+    const c = document.createElement('div');
+    c.className = 'cell';
+    c.appendChild(inner);
+    const p = document.createElement('p');
+    p.className = 'cap';
+    p.innerHTML = capHtml;
+    c.appendChild(p);
+    return c;
+  }
+  function zoomCell(inner, capHtml) {
+    const box = document.createElement('div');
+    box.className = 'zoombox';
+    box.appendChild(inner);
+    return cell(box, capHtml);
+  }
+
+  const sheet = document.getElementById('sheet');
+  if (P.get('sheet')) {
+    const r1 = document.createElement('div'); r1.className = 'row';
+    r1.append(
+      cell(buildStage(60), '相距 <b>60px</b> · 自由悬浮'),
+      cell(buildStage(40), '相距 <b>40px</b> · 冒出液滴鼓包'),
+      cell(buildStage(22), '相距 <b>22px</b> · 液滴伸长'),
+      cell(buildStage(12), '相距 <b>12px</b> · 液桥搭上，收腰'),
+      cell(buildMerged(PROFILES[2]), '<b>贴合</b> · G2 曲率连续收口（下排四选一）'),
+    );
+    const title = document.createElement('p'); title.className = 'cap-row';
+    title.textContent = '贴合收口 · 特写 ×3.2（重点看：凹弧与直边之间有没有「接缝感」）：';
+    const r2 = document.createElement('div'); r2.className = 'row';
+    for (const prof of PROFILES) r2.appendChild(zoomCell(buildMerged(prof), `<b>${prof.name}</b>`));
+    sheet.append(r1, title, r2);
+  } else {
+    const fixed = P.get('gap');
+    let gap = fixed != null ? Number(fixed) : 60;
+    const c = cell(buildStage(gap), fixed != null ? `gap = ${fixed}px` : '循环演示中…');
+    sheet.appendChild(c);
+    if (fixed == null) {
+      let dir = -1;
+      setInterval(() => {
+        gap += dir * 1.2;
+        if (gap <= 4) { gap = 4; dir = 1; }
+        if (gap >= 60) { gap = 60; dir = -1; }
+        const cellEl = sheet.querySelector('.cell');
+        cellEl.replaceChild(buildStage(gap), cellEl.firstChild);
+      }, 40);
+    }
+  }
+})();
+</script>
+</body>
+</html>
