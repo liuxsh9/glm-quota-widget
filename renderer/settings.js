@@ -367,6 +367,55 @@
     return DOCKM && Object.prototype.hasOwnProperty.call(DOCKM.METRICS, pid) ? DOCKM.METRICS[pid] : null;
   }
 
+  /* 「圆圈大小」（config.dockScale）：四个预设档 + 滚轮调出来的自定义值。
+     主进程下发前已按 [0.6, 1.6] 规范化，这里缺省 / 认不出的按 1。 */
+  const DOCK_SCALES = [
+    { v: 0.75, label: '小' }, { v: 1, label: '标准' }, { v: 1.25, label: '大' }, { v: 1.5, label: '特大' },
+  ];
+
+  function dockScaleOf(st) {
+    const n = Number(st && st.config ? st.config.dockScale : 1);
+    return Number.isFinite(n) && n >= 0.6 && n <= 1.6 ? n : 1;   // 区间判断与 app.js 同款：越界也按 1，别只认「认得出的数」
+  }
+
+  /** 大小下拉的选项：四个预设；当前值在预设外（Ctrl+滚轮调出来的）时补一项「自定义（NN%）」并选中 */
+  function scaleOptionsHtml(cur) {
+    const opts = DOCK_SCALES.map((o) =>
+      `<option value="${o.v}" data-scale="${o.v}"${o.v === cur ? ' selected' : ''}>${o.label}</option>`);
+    if (!DOCK_SCALES.some((o) => o.v === cur)) {
+      opts.push(`<option value="${cur}" data-scale="${cur}" selected>自定义（${Math.round(cur * 100)}%）</option>`);
+    }
+    return opts.join('');
+  }
+
+  /** 「圆圈大小」行跟随状态：值真变了才重建选项（余额广播那种「值没变」的填充不碰 DOM，
+   *  免得用户正拉着下拉时选项被换掉） */
+  let scaleSig = '';
+  function syncScaleRow(st) {
+    const sel = document.getElementById('dockScale');
+    if (!sel) return;
+    const cur = dockScaleOf(st);
+    if (String(cur) === scaleSig) return;
+    scaleSig = String(cur);
+    sel.innerHTML = scaleOptionsHtml(cur);
+  }
+
+  /** 下拉的 change 绑定：元素是 index.html 里的静态节点，只绑一次 */
+  let scaleBound = false;
+  function bindScaleRow() {
+    const sel = document.getElementById('dockScale');
+    if (!sel || scaleBound) return;
+    scaleBound = true;
+    sel.addEventListener('change', async () => {
+      const opt = sel.selectedOptions[0];
+      const v = opt ? Number(opt.dataset.scale) : NaN;
+      if (!Number.isFinite(v)) return;
+      const next = await window.glm.save({ dockScale: v });   // 与既有自动保存同一套：change 即落盘
+      if (next) window.GLMPUI.applyState(next);
+      window.GLMPUI.flashSaved();
+    });
+  }
+
   /** 预算框占位：跟着口径走 —— 默认口径（今日）用通用文案，其余把周期写进占位，
    *  免得「这笔钱算哪一段」说不清 */
   function budgetPlaceholder(metric) {
@@ -406,13 +455,15 @@
     el.classList.toggle('nobudget', !!inp && cur.budget == null);
   }
 
-  /** 重建整段（行集变了才调用）；没有启用账户时整段隐藏 */
+  /** 重建整段（行集变了才调用）；没有启用账户时整段隐藏（含「圆圈大小」行） */
   function renderDock(st) {
     const host = document.getElementById('dockRows');
     const sec = document.getElementById('dockSec');
     if (!host || !sec) return;
     const rows = dockRows(st);
     sec.hidden = !rows.length;
+    syncScaleRow(st);
+    bindScaleRow();
     host.innerHTML = rows.map(({ pid, acc }) => dockRowHtml(pid, acc)).join('');
     host.querySelectorAll('.dock-row').forEach((el) => {
       const sel = el.querySelector('select.dmetric');
@@ -427,13 +478,14 @@
     });
   }
 
-  /** 回填（不重建）：口径 / 金额 / 占位 / 提示跟着状态走 */
+  /** 回填（不重建）：口径 / 金额 / 占位 / 提示 / 圆圈大小跟着状态走 */
   function fillDock(st) {
     const host = document.getElementById('dockRows');
     const sec = document.getElementById('dockSec');
     if (!host || !sec) return;
     const rows = dockRows(st);
     sec.hidden = !rows.length;
+    syncScaleRow(st);
     const byId = new Map(rows.map((r) => [r.acc.id, r]));
     host.querySelectorAll('.dock-row').forEach((el) => {
       const hit = byId.get(el.dataset.id);

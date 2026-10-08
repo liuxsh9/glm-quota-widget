@@ -93,11 +93,15 @@
     </div>
     <p class="note">自动刷新带 ±20s 随机抖动，另有托盘「立即刷新」；请求直连各官方域名，不会被 CORS 拦截。所有凭据只保存在本机 <code>config.json</code>，不会外发。</p>
 
-    <!-- 贴边圆圈（dock）：每个启用账户的圆圈口径（DeepSeek 另配预算当 100%）。
-         行由 settings.js 生成；没有启用账户时整段隐藏 -->
+    <!-- 贴边圆圈（dock）：每个启用账户的圆圈口径（DeepSeek 另配预算当 100%）+ 圆圈大小。
+         口径行由 settings.js 生成；没有启用账户时整段隐藏（「圆圈大小」一行跟着一起隐藏） -->
     <div id="dockSec" hidden>
       <h4 class="sech">贴边圆圈</h4>
       <p class="hintline">把胶囊拖到屏幕左 / 右边缘松手，会变成一列圆圈；这里设定每个圆圈显示哪个百分比</p>
+      <div class="dock-row dock-sizerow">
+        <label class="dname" for="dockScale">圆圈大小</label>
+        <select id="dockScale" class="dscale" aria-label="圆圈大小"></select>
+      </div>
       <div id="dockRows"></div>
     </div>
   </div>

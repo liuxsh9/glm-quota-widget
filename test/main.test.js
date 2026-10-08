@@ -294,6 +294,7 @@ async function bootOnly(dir) {
     out({
       view: s.view,
       dockSide: s.config.dockSide,
+      dockScale: s.config.dockScale,
       accounts: s.config.accounts.map((a) => ({ id: a.id, dock: a.dock })),
       diskView: cfg.view, diskDock: cfg.dock,
       bounds: { x: windowBounds.x, y: windowBounds.y, width: windowBounds.width, height: windowBounds.height },
@@ -487,6 +488,17 @@ async function bootOnly(dir) {
   t('dsPollMin 越界回退 2', (await state()).config.dsPollMin === 2);
   await call('cfg:save', { dsPollMin: 5 });
   t('dsPollMin 5 → 5', (await state()).config.dsPollMin === 5);
+  t('dockScale 默认 1（旧配置没有这个键）', (await state()).config.dockScale === 1);
+  await call('cfg:save', { dockScale: 5 });
+  t('dockScale 越界（5）回退 1', (await state()).config.dockScale === 1);
+  await call('cfg:save', { dockScale: 0.1 });
+  t('dockScale 越界（0.1）回退 1', (await state()).config.dockScale === 1);
+  await call('cfg:save', { dockScale: 'abc' });
+  t('dockScale 非数字（abc）回退 1', (await state()).config.dockScale === 1);
+  await call('cfg:save', { dockScale: 0.857 });
+  t('dockScale 0.857 → 0.86（两位小数）', (await state()).config.dockScale === 0.86);
+  await call('cfg:save', { dockScale: 1.25 });
+  t('dockScale 1.25 → 1.25', (await state()).config.dockScale === 1.25);
 
   console.log('\n删除账户（清到空）:');
   const glmIds = () => (state().providers.glm ? state().providers.glm.accounts.map((a) => a.id) : []);
@@ -670,18 +682,21 @@ async function bootOnly(dir) {
     readCfg().dock === null && readCfg().pos.x === 900 && readCfg().pos.y === 400,
     JSON.stringify([readCfg().dock, readCfg().pos]));
 
-  // —— 双屏并排：接缝不是边缘
+  // —— 双屏并排：接缝同样可以贴（2026-10-08 反转：任意显示器的左右边缘都可贴，含接缝）
   extraDisplays = [mkDisplay(2, 1920, 0, 1920, 1080, { x: 1920, y: 0, width: 1920, height: 1040 })];
-  const seamTarget = 1920 - windowBounds.width - 20;   // 右边缘距接缝 20 DIP：数值上 ≤ SNAP_PX，但接缝不算边缘
+  const seamTarget = 1920 - windowBounds.width - 20;   // 右边缘距接缝 20 DIP（≤ SNAP_PX 28）：松手处要贴住
   const relSeam = await dragWindowTo(seamTarget, windowBounds.y);
   const stSeam = await state();
-  t('两屏接缝处松手仍是胶囊（接缝被误判成边缘的话窗口会在半路被吸住）',
-    stSeam.view === 'capsule' && stSeam.config.dockSide === null && relSeam.x === seamTarget,
-    JSON.stringify([stSeam.view, relSeam]));
-  t('接缝处不写 config.dock', readCfg().dock === null, JSON.stringify(readCfg().dock));
+  t('两屏接缝处松手 → 贴到接缝（贴右、落左屏：右边 = 工作区右边 = 接缝；拖动全程未被吸住）',
+    stSeam.view === 'dock' && stSeam.config.dockSide === 'right'
+    && relSeam.x === seamTarget && windowBounds.x + windowBounds.width === 1920,
+    JSON.stringify([stSeam.view, relSeam, windowBounds]));
+  t('接缝处落盘：config.dock 记下 side 与校正后的 x',
+    !!readCfg().dock && readCfg().dock.side === 'right' && readCfg().dock.x === 1860,
+    JSON.stringify(readCfg().dock));
 
   // —— 拔屏：dock 贴在副屏右边，副屏消失后自己贴回主屏
-  const capW2 = windowBounds.width;                       // 贴边后窗口会变窄成 dock，目标得按胶囊宽算
+  const capW2 = windowBounds.width;                       // 上一条用例把窗口留在了接缝的 dock 里；目标得按拖拽中窗口的实际宽度算
   const subTarget = 3840 - capW2 - 10;
   const relSub = await dragWindowTo(subTarget, windowBounds.y);
   const stSub = await state();
@@ -1026,6 +1041,12 @@ async function bootOnly(dir) {
       { id: 'g1', dock: { metric: 'five', budget: null } },
       { id: 'd1', dock: { metric: 'month', budget: 12.5 } },
     ]), JSON.stringify(b4.accounts));
+
+  // dockScale 落盘重启后仍在；磁盘上被手改成坏值（不在 [0.6,1.6]）时按 1 下发
+  const b6 = bootWith({ accounts: [], dockScale: 1.25, view: 'capsule' });
+  t('dockScale 落盘后重启仍在（1.25）', b6.dockScale === 1.25, JSON.stringify(b6));
+  const b7 = bootWith({ accounts: [], dockScale: 7, view: 'capsule' });
+  t('磁盘上的坏值（7）启动时按 1 下发', b7.dockScale === 1, JSON.stringify(b7));
 
   // 贴边时增 / 停账户：兜底高度（n*62+40）得由主进程自己跟着重排。
   // 子进程里没有任何渲染层上报 —— 高度变了就只能是主进程自愈的（这正是修复前缺的那条路径）。

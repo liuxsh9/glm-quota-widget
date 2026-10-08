@@ -334,10 +334,10 @@ function syncCapsuleSize() {
    圆圈 = 圆环（百分比弧 + 底环）+ 中心 logo + 环下百分比数字。口径（取哪个百分比）与环色
    全部来自 lib/dock-metric.js（GLMDOCK），渲染层不自己算百分比、也不自己挑颜色。
    账户集合没变时**不重建**列：只更新环与数字 —— 否则状态每次推送（每秒都可能有）圆圈都会闪。 */
-const DOCK_R = 18.25;                 // 圆环半径：直径 40 − 环宽 3.5
+const DOCK_R = 18.25;                 // 圆环半径：直径 40 − 环宽 3.5（SVG viewBox 内部单位，跟随 CSS 缩放）
 const DOCK_C = 2 * Math.PI * DOCK_R;  // 圆周长：进度弧的 dasharray
-const DOCK_FILLET = 14;               // 贴边侧上下两端的反向圆角半径
-const DOCK_CORNER = 15;               // 远离屏幕一侧的正常圆角（与 .glass 的 15px 一致）
+const DOCK_SHOULDER = 12;             // 肩弧半径：贴边侧上下两端从身体 flare 到屏幕边的凹弧（× dockScale）
+const DOCK_CORNER = 15;               // 远离屏幕一侧的正常圆角（与 .glass 的 15px 一致，× dockScale）
 
 /** 这一列画哪些圆圈：provider 注册表序 → 每家的账户原序 → 只留启用的 */
 function dockCells(s) {
@@ -402,9 +402,29 @@ function dockEmptyHtml() {
     + `</div>`;
 }
 
+/** 圆圈大小落到 #dock 的 --ds 上（CSS 里全部尺寸都 calc 它）+ 立刻重做造型 / 重测上报。
+ *  Ctrl+滚轮 / Ctrl+0 先用它「乐观先行」——不等主进程回包，滚轮那一帧圈就变大变小了。 */
+function applyDockScale(s) {
+  if (st && st.config) st.config.dockScale = s;
+  const host = $('#dock');
+  if (host) host.style.setProperty('--ds', String(s));
+  applyDockShape();
+  syncDockSize();
+}
+
+/** 贴边列上的 Ctrl+滚轮：步进 0.1、夹在 [0.6, 1.6]（一位小数），本地上立即应用 + 落盘 */
+function stepDockScale(dir) {
+  const cur = dockScaleOf(st);
+  const next = Math.min(1.6, Math.max(0.6, Math.round((cur + dir * 0.1) * 10) / 10));
+  if (next === cur) return;      // 到顶 / 到底：不空转、不落盘
+  applyDockScale(next);
+  api.save({ dockScale: next });
+}
+
 function renderDock(s) {
   const host = $('#dock');
   if (!host) return;
+  host.style.setProperty('--ds', String(dockScaleOf(s)));   // 圆圈大小：所有尺寸都随它走
   const cells = dockCells(s);
   // 空态也占一档结构指纹：'empty'（真实指纹是 'pid:accId' 的逗号列表，撞不上）
   const sig = cells.length ? cells.map(({ pid, acc }) => pid + ':' + acc.id).join(',') : 'empty';
@@ -425,27 +445,37 @@ function renderDock(s) {
   syncDockSize();
 }
 
-/* ---------- 贴边造型 ----------
-   贴边侧：一条直角直线贴满屏幕边（整高），上下两端各一段反向圆角（凹弧）沿边缘向下 / 向上
-   延伸，然后把身体的顶边 / 底边张开到全宽 —— 像是从屏幕边缘长出来的；远离屏幕的一侧是
-   正常的大圆角。同一个 d 既当裁剪（clip-path，让 .glass 的配色 / 噪点正好铺满这个形状）
-   又当描边（.dock-edge path），所以背景与描边完全同形。左右镜像。 */
-function dockPathData(w, h, side) {
-  const r = DOCK_FILLET, R = DOCK_CORNER, n = (v) => Math.round(v * 100) / 100;
+/* ---------- 贴边造型（2026-10-08 按用户实测反馈改版）----------
+   贴边侧（右侧的 x=w / 左侧的 x=0）从 y=0 贯通到 y=h —— 整条边都贴着屏幕边；身体占
+   y ∈ [f, h-f] 全宽，上下两端各以一段凹弧「肩部」收拢：肩弧是四分之一圆，从身体的顶边 /
+   底边（y=f / y=h-f）起、flare 到贴边侧的顶 / 底边，像是被屏幕边缘「吸住」；远离屏幕的
+   一侧是正常圆角 R。第一版把贴边侧两角挖掉 1/4 圆，用户实测后否掉了它（材料不到屏幕边、
+   角上是空的）。同一个 d 既当裁剪（clip-path，让 .glass 的配色 / 噪点正好铺满这个形状）
+   又当描边（.dock-edge path），所以背景与描边完全同形。左右镜像（sweep 标志取反）。
+   所有参数（f / R）乘 dockScale —— 圆圈大小与肩弧一起缩放，形状比例不变。 */
+function dockPathData(w, h, side, s) {
+  const f = DOCK_SHOULDER * s, R = DOCK_CORNER * s, n = (v) => Math.round(v * 100) / 100;
   if (side === 'left') {          // 贴左边：屏幕边是 x=0，(0,0) 就是屏幕边缘上的上角
-    return `M 0 ${n(r)} A ${r} ${r} 0 0 0 ${n(r)} 0`
-      + ` H ${n(w - R)} A ${R} ${R} 0 0 1 ${n(w)} ${n(R)}`
-      + ` V ${n(h - R)} A ${R} ${R} 0 0 1 ${n(w - R)} ${n(h)}`
-      + ` H ${n(r)} A ${r} ${r} 0 0 0 0 ${n(h - r)}`
-      + ` V ${n(r)} Z`;
+    return `M ${n(f)} 0 H 0 V ${n(h)} H ${n(f)}`                       // 上舌部 → 左侧边（贯通整高）→ 下舌部
+      + ` A ${n(f)} ${n(f)} 0 0 1 ${n(2 * f)} ${n(h - f)}`             // 下端肩弧：flare 到身体底边
+      + ` H ${n(w - R)} A ${R} ${R} 0 0 0 ${n(w)} ${n(h - f - R)}`     // 身体底边 → 远端下角
+      + ` V ${n(f + R)} A ${R} ${R} 0 0 0 ${n(w - R)} ${n(f)}`         // 远端边 → 远端上角
+      + ` H ${n(2 * f)} A ${n(f)} ${n(f)} 0 0 1 ${n(f)} 0 Z`;          // 身体顶边 → 上端肩弧
   }
-  return `M ${n(R)} 0 H ${n(w - r)} A ${r} ${r} 0 0 0 ${n(w)} ${n(r)}`   // 贴右边：屏幕边是 x=w
-    + ` V ${n(h - r)} A ${r} ${r} 0 0 0 ${n(w - r)} ${n(h)}`
-    + ` H ${n(R)} A ${R} ${R} 0 0 1 0 ${n(h - R)}`
-    + ` V ${n(R)} A ${R} ${R} 0 0 1 ${n(R)} 0 Z`;
+  return `M ${n(w - f)} 0 H ${n(w)} V ${n(h)} H ${n(w - f)}`           // 贴右边：屏幕边是 x=w
+    + ` A ${n(f)} ${n(f)} 0 0 0 ${n(w - 2 * f)} ${n(h - f)}`            // 下端肩弧：flare 到身体底边
+    + ` H ${n(R)} A ${R} ${R} 0 0 1 0 ${n(h - f - R)}`
+    + ` V ${n(f + R)} A ${R} ${R} 0 0 1 ${n(R)} ${n(f)}`
+    + ` H ${n(w - 2 * f)} A ${n(f)} ${n(f)} 0 0 0 ${n(w - f)} 0 Z`;     // 身体顶边 → 上端肩弧
 }
 
-/** 把当前实测尺寸 / 贴边侧落到造型上（尺寸或侧别没变就不重复写 DOM） */
+/** 圆圈缩放（config.dockScale）：主进程下发前已按 [0.6, 1.6] 规范化，这里再兜一层，认不出的按 1 */
+function dockScaleOf(s) {
+  const n = s && s.config ? Number(s.config.dockScale) : NaN;
+  return Number.isFinite(n) && n >= 0.6 && n <= 1.6 ? n : 1;
+}
+
+/** 把当前实测尺寸 / 贴边侧 / 缩放落到造型上（三者都没变就不重复写 DOM） */
 let lastDockShape = '';
 function applyDockShape() {
   const el = $('#dock');
@@ -453,11 +483,12 @@ function applyDockShape() {
   const rect = el.getBoundingClientRect();
   if (!rect.width || !rect.height) return;      // 不在贴边视图（display:none）时量不到
   const side = (st && st.config && st.config.dockSide) === 'left' ? 'left' : 'right';
+  const s = dockScaleOf(st);
   const w = Math.round(rect.width), h = Math.round(rect.height);
-  const key = `${side}:${w}x${h}`;
+  const key = `${side}:${w}x${h}:${s}`;
   if (key === lastDockShape) return;
   lastDockShape = key;
-  const d = dockPathData(w, h, side);
+  const d = dockPathData(w, h, side, s);
   el.style.clipPath = `path("${d}")`;
   const path = el.querySelector('.dock-edge path');
   if (path) path.setAttribute('d', d);
@@ -959,7 +990,8 @@ function collapsedView() {
   return (st && st.config && st.config.dockSide) ? 'dock' : 'capsule';
 }
 
-/** 贴边列与胶囊一样保持原始大小：缩放（Ctrl+滚轮 / Ctrl+0）在这两个视图下不生效 */
+/** 胶囊与贴边列保持原始大小：视图缩放（Ctrl+滚轮 / Ctrl+0）在这两个视图下不生效。
+ *  （贴边列上那两个手势改的是圆圈大小 dockScale，见 bind() 里的分支 —— 那是「圈多大」，不是缩放。） */
 function noZoom() {
   return !st || st.view === 'capsule' || st.view === 'dock';
 }
@@ -1050,14 +1082,27 @@ function bind() {
     if (e.key === 'Escape' && st && st.view !== 'capsule' && st.view !== 'dock') {
       const v = collapsedView(); setViewLocal(v); api.setView(v);
     }
-    if (e.ctrlKey && (e.key === '0' || e.code === 'Digit0') && !noZoom()) {
-      e.preventDefault();
-      if ((st.config.zoom || 1) !== 1) api.setZoom(1);
+    if (e.ctrlKey && (e.key === '0' || e.code === 'Digit0')) {
+      if (st && st.view === 'dock') {          // 贴边列上 = 圆圈大小复位（视图缩放在这儿本来就不生效）
+        if (dockScaleOf(st) !== 1) { e.preventDefault(); applyDockScale(1); api.save({ dockScale: 1 }); }
+        return;
+      }
+      if (!noZoom()) {
+        e.preventDefault();
+        if ((st.config.zoom || 1) !== 1) api.setZoom(1);
+      }
     }
   });
-  // Ctrl+滚轮：展开态等比缩放（胶囊 / 贴边列保持原始大小不缩放）
+  // Ctrl+滚轮：展开态等比缩放（胶囊保持原始大小不缩放）；贴边列上改的是圆圈大小（dockScale），
+  // 不是视图缩放 —— 面板 / 设置里的缩放手势一字未动
   window.addEventListener('wheel', (e) => {
-    if (!e.ctrlKey || noZoom()) return;
+    if (!e.ctrlKey) return;
+    if (st && st.view === 'dock') {
+      e.preventDefault();
+      stepDockScale(e.deltaY < 0 ? 1 : -1);
+      return;
+    }
+    if (noZoom()) return;
     e.preventDefault();
     const cur = st.config.zoom || 1;
     const next = Math.min(1.6, Math.max(0.8, Math.round((cur + (e.deltaY < 0 ? 0.05 : -0.05)) * 20) / 20));

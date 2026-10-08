@@ -228,9 +228,10 @@ body.view-dock #dock { display: flex; }
 
 #dock {
   position: relative; flex-direction: column; align-items: center;
-  gap: 10px; padding: 16px 12px;
+  gap: calc(10px * var(--ds)); padding: calc(16px * var(--ds)) calc(12px * var(--ds));
   width: max-content; height: max-content;   /* 尺寸由内容定，渲染层实测后上报 */
   border: 0; border-radius: 0;               /* 形状全归 clip-path，避免和 border-radius 打架 */
+  --ds: 1;                                   /* 圆圈缩放（config.dockScale）：这里所有尺寸都乘它 */
   --ring-track: rgba(255, 255, 255, .14);    /* 底环：半透明中性色（深色主题） */
   --ring-dim: rgba(255, 255, 255, .30);      /* 没有数 / 过期时的灰环 */
 }
@@ -241,10 +242,12 @@ body.theme-light #dock { --ring-track: rgba(23, 28, 45, .13); --ring-dim: rgba(2
 #dock .dock-edge path { fill: none; stroke: rgba(255, 255, 255, .14); stroke-width: 2; }
 body.theme-light #dock .dock-edge path { stroke: rgba(255, 255, 255, .65); }
 
-/* 圆圈：40px 圆环 + 中心 logo + 环下百分比数字（参考 iOS 电池小组件） */
-#dock .dc { display: flex; flex-direction: column; align-items: center; gap: 3px; }
-#dock .dc-top { position: relative; width: 40px; height: 40px; }
-#dock .dc-ring { display: block; width: 40px; height: 40px; }
+/* 圆圈：40px 圆环 + 中心 logo + 环下百分比数字（参考 iOS 电池小组件）。
+   尺寸一律 calc(现值 * var(--ds)) —— 不用 transform: scale()（那会连带改 rect 语义与文字清晰度）；
+   .dc-ring 的 SVG 走 width/height（viewBox 0 0 40 40 自动等比，描边宽度不用改） */
+#dock .dc { display: flex; flex-direction: column; align-items: center; gap: calc(3px * var(--ds)); }
+#dock .dc-top { position: relative; width: calc(40px * var(--ds)); height: calc(40px * var(--ds)); }
+#dock .dc-ring { display: block; width: calc(40px * var(--ds)); height: calc(40px * var(--ds)); }
 #dock .dc-track { fill: none; stroke: var(--ring-track); stroke-width: 3.5; }
 #dock .dc-arc {
   fill: none; stroke-width: 3.5; stroke-linecap: round;
@@ -258,26 +261,26 @@ body.theme-light #dock .dock-edge path { stroke: rgba(255, 255, 255, .65); }
   position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
   color: var(--ink);      /* 三家 logo 同一颜色 = 主题前景色，不做任何一家的特殊着色 */
 }
-#dock .dc-logo svg { display: block; width: 18px; height: 18px; }
-#dock .dc-pct { font-size: 11px; line-height: 1.2; color: var(--ink2); font-variant-numeric: tabular-nums; }
+#dock .dc-logo svg { display: block; width: calc(18px * var(--ds)); height: calc(18px * var(--ds)); }
+#dock .dc-pct { font-size: calc(11px * var(--ds)); line-height: 1.2; color: var(--ink2); font-variant-numeric: tabular-nums; }
 #dock .dc-warn .dc-pct { color: var(--ink3); }
 /* 小警示角标：凭据失效 / 更新失败时才出来（细节在原生 title 里） */
 #dock .dc-badge {
   display: none; position: absolute; top: -1px; right: -1px;
-  width: 13px; height: 13px; align-items: center; justify-content: center;
-  border-radius: 50%; font-size: 9px; font-style: normal; font-weight: 700; line-height: 1;
+  width: calc(13px * var(--ds)); height: calc(13px * var(--ds)); align-items: center; justify-content: center;
+  border-radius: 50%; font-size: calc(9px * var(--ds)); font-style: normal; font-weight: 700; line-height: 1;
   color: #1a1206; background: #fbbf24; box-shadow: 0 0 0 1.5px rgba(10, 12, 18, .5);
 }
 #dock .dc-warn .dc-badge { display: flex; }
 body.theme-light #dock .dc-badge { color: #fff; background: #d97706; box-shadow: 0 0 0 1.5px rgba(255, 255, 255, .9); }
 
 /* 空态（全部账户停用 / 还没配）：列里留一个安静的虚线圆 + ⚙，点它直达设置。
-   尺寸与圆圈同一套（40px），颜色吃贴边的主题变量（浅深各一套） */
+   尺寸与圆圈同一套（40px × --ds），颜色吃贴边的主题变量（浅深各一套） */
 #dock .dc-empty {
   display: flex; align-items: center; justify-content: center;
-  width: 40px; height: 40px; border-radius: 50%;
+  width: calc(40px * var(--ds)); height: calc(40px * var(--ds)); border-radius: 50%;
   border: 1.5px dashed var(--ring-dim);
-  color: var(--ink3); font-size: 15px; line-height: 1;
+  color: var(--ink3); font-size: calc(15px * var(--ds)); line-height: 1;
 }
 #dock .dc-empty .dc-gear { opacity: .85; }
 #dock .dc-empty:hover { border-color: var(--ink3); color: var(--ink2); }
@@ -872,8 +875,9 @@ body.theme-light #settings .dock-row { background: rgba(23, 28, 45, .03); }
   font-size: 12px; color: var(--ink); font-weight: 600;
   max-width: 96px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-/* 行里的下拉比通用段窄：它跟账户名 / 金额框挤在同一行（口径长的一家会自己撑开） */
-#settings .dock-row select.dmetric { flex: 1 1 76px; width: auto; min-width: 0; margin-top: 0; padding: 5px 7px; }
+/* 行里的下拉比通用段窄：它跟账户名 / 金额框挤在同一行（口径长的一家会自己撑开）；
+   「圆圈大小」行的下拉同一套尺寸 */
+#settings .dock-row select.dmetric, #settings .dock-row select.dscale { flex: 1 1 76px; width: auto; min-width: 0; margin-top: 0; padding: 5px 7px; }
 #settings .dock-row .dbudget {
   flex: none; display: flex; align-items: center; gap: 4px;
   border-radius: 8px; padding: 0 8px;

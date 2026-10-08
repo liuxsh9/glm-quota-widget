@@ -1268,14 +1268,68 @@ with sync_playwright() as p:
     t("回显：占位是本月那条（这笔钱对应哪个周期）", pg.get_attribute(inp_sel, "placeholder") == "本月预算")
     t("有预算 → 提示不显示", not pg.locator("#dockRows .dock-row[data-id='d1'] .dhint").is_visible())
 
+    print("贴边圆圈段 · 「圆圈大小」下拉（config.dockScale）:")
+    t("「圆圈大小」行在段顶部（口径行集之上）", pg.evaluate("""() => {
+        const row = document.querySelector('#dockSec .dock-sizerow');
+        const rows = document.querySelector('#dockRows');
+        return !!row && !!row.querySelector('#dockScale')
+          && (row.compareDocumentPosition(rows) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0;
+      }"""))
+    t("四个预设档：小 0.75 / 标准 1 / 大 1.25 / 特大 1.5（data- 里带 scale 值）", pg.evaluate(
+      "[...document.querySelectorAll('#dockScale option')].map(o => o.dataset.scale + ':' + o.textContent).join()")
+      == "0.75:小,1:标准,1.25:大,1.5:特大",
+      str(pg.evaluate("[...document.querySelectorAll('#dockScale option')].map(o => o.dataset.scale + ':' + o.textContent)")))
+    t("当前值 1 → 「标准」选中", pg.eval_on_selector("#dockScale", "e => e.value") == "1")
+    pg.evaluate("window.__saved = null")
+    pg.select_option("#dockScale", "1.25")
+    pg.wait_for_function("window.__saved && window.__saved.dockScale === 1.25")
+    t("改选「大」→ 立即 save({dockScale: 1.25})（change 即落盘，与既有自动保存同一套）",
+      pg.evaluate("window.__saved") == {"dockScale": 1.25}, str(pg.evaluate("window.__saved")))
+    t("下拉跟着落盘回包选中「大」", pg.eval_on_selector("#dockScale", "e => e.value") == "1.25")
+    t("闪现「已保存」", pg.evaluate("document.querySelector('#saveTip').classList.contains('show')"))
+    # Ctrl+滚轮调出来的值（不在预设里）→ 追加一项「自定义（NN%）」并选中
+    pg.evaluate("() => { const s = window.__state; s.config.dockScale = 0.9; window.__cb(s); }")
+    pg.wait_for_timeout(200)
+    t("0.9（滚轮档）→ 出现「自定义（90%）」且被选中", pg.evaluate("""() => {
+        const sel = document.querySelector('#dockScale');
+        const o = sel.selectedOptions[0];
+        return !!o && sel.value === '0.9' && o.dataset.scale === '0.9' && o.textContent === '自定义（90%）';
+      }"""), str(pg.evaluate("[document.querySelector('#dockScale').value, [...document.querySelectorAll('#dockScale option')].map(o => o.textContent)]")))
+    pg.evaluate("() => { const s = window.__state; s.config.dockScale = 1.25; window.__cb(s); }")
+    pg.wait_for_timeout(150)
+    t("回到预设值 → 自定义项消失、仍是四个档且「大」选中", pg.evaluate(
+      "[...document.querySelectorAll('#dockScale option')].map(o => o.textContent).join()") == "小,标准,大,特大"
+      and pg.eval_on_selector("#dockScale", "e => e.value") == "1.25")
+    # T10b：越界值的兜底必须与渲染层同口径 —— state 带越界值（防守路径，当前主进程已规范化）时
+    # 设置页也按 1 处理；不许显示「自定义（500%）」而圆圈实际按 1 画（app.js dockScaleOf 是同一把尺）
+    pg.evaluate("() => { const s = window.__state; s.config.dockScale = 5; window.__cb(s); }")
+    pg.wait_for_timeout(200)
+    t("越界 5 → 下拉选中「标准」、没有「自定义（500%）」项", pg.evaluate("""() => {
+        const sel = document.querySelector('#dockScale');
+        const opts = [...sel.querySelectorAll('option')];
+        return sel.value === '1' && sel.selectedOptions[0].textContent === '标准'
+          && !opts.some(o => o.dataset.scale === '5' || o.textContent.indexOf('自定义') >= 0);
+      }"""), str(pg.evaluate("[document.querySelector('#dockScale').value, [...document.querySelectorAll('#dockScale option')].map(o => o.dataset.scale + ':' + o.textContent)]")))
+    # 正常自定义档（0.9）再钉一遍：防这次收口把滚轮调出来的档位改坏
+    pg.evaluate("() => { const s = window.__state; s.config.dockScale = 0.9; window.__cb(s); }")
+    pg.wait_for_timeout(200)
+    t("0.9（滚轮自定义档）→ 出现并选中「自定义（90%）」", pg.evaluate("""() => {
+        const sel = document.querySelector('#dockScale');
+        const o = sel.selectedOptions[0];
+        return !!o && sel.value === '0.9' && o.dataset.scale === '0.9' && o.textContent === '自定义（90%）';
+      }"""), str(pg.evaluate("[document.querySelector('#dockScale').value, [...document.querySelectorAll('#dockScale option')].map(o => o.textContent)]")))
+    pg.evaluate("() => { const s = window.__state; s.config.dockScale = 1; window.__cb(s); }")
+    pg.wait_for_timeout(120)
+
     print("贴边圆圈段 · 没有启用账户时整段隐藏:")
     pg.evaluate("""() => { const s = window.__state;
       s.config.accounts.forEach(a => { a.enabled = false; });
       window.__cb(s); }""")
     pg.wait_for_timeout(150)
-    t("全部停用 → 整段隐藏（连标题一起收走）",
+    t("全部停用 → 整段隐藏（连标题和「圆圈大小」一行一起收走）",
       pg.locator("#dockSec").is_hidden() and not pg.locator("#dockSec .sech").is_visible()
-      and pg.locator("#dockRows .dock-row").count() == 0)
+      and pg.locator("#dockRows .dock-row").count() == 0
+      and not pg.locator("#dockScale").is_visible())
     # 收拾：还原本段之前的状态（快照在夹具里取的），下游用例不受影响
     pg.evaluate("() => { const s = window.__state, b = window.__preDockSec;"
                 " s.providers = b.providers; s.config = b.config; window.__cb(s); }")
@@ -1700,7 +1754,7 @@ with sync_playwright() as p:
         return !!s && s.w === Math.ceil(r.width) && s.h === Math.ceil(r.height)
           && window.__dockSizes.length > 0 && call && call.w === s.w && call.h === s.h;
       }"""), str(pg.evaluate("[window.__dockSize, window.__dockSizes]")))
-    t("反向圆角的延伸区算在高度里：造型 bbox 撑满上报高度，圆圈排在延伸区下面", pg.evaluate("""() => {
+    t("肩部延伸区（贴边侧的上下舌部）算在高度里：造型 bbox 撑满上报高度，圆圈排在延伸区下面", pg.evaluate("""() => {
         const el = document.querySelector('#dock');
         const r = el.getBoundingClientRect();
         const bb = el.querySelector('.dock-edge path').getBBox();
@@ -1711,12 +1765,19 @@ with sync_playwright() as p:
           const bb = el.querySelector('.dock-edge path').getBBox();
           return [bb.width, bb.height, el.getBoundingClientRect().height]; }""")))
 
-    print("贴边模式（dock）· 造型（贴边侧反向圆角 / 远端正常圆角）:")
-    GEOM = """() => {
+    print("贴边模式（dock）· 造型（贴边侧沿屏幕边贯通整高 + 上下凹弧肩部 / 远端正常圆角）:")
+    # 几何全部按参数（f = 12s 肩弧、R = 15s 远端圆角）从**真实那条 path**上点名：
+    # SVGPathElement.isPointInFill 直接问路径「这个点在不在形状里」（Chromium 支持），
+    # 点坐标按 s 参数化 —— s=1 时正是工单里手算验证的那几个点；s=0.75 复测同一套点。
+    GEOM = """(s) => {
         const el = document.querySelector('#dock');
         const path = el.querySelector('.dock-edge path');
         const r = el.getBoundingClientRect();
         const w = r.width, h = r.height;
+        const side = document.body.classList.contains('dock-left') ? 'left' : 'right';
+        const f = 12 * s, R = 15 * s;                              // 与渲染层同一套参数
+        const E = (d) => side === 'left' ? d : w - d;              // 距贴边侧 d 处的绝对 x
+        const inp = (x, y) => path.isPointInFill(new DOMPoint(x, y));
         // ① 解析 d 拿竖直直线段（贴边侧那条）
         const toks = path.getAttribute('d').match(/[A-Za-z]|-?\\d*\\.?\\d+/g) || [];
         const NP = { M: 2, H: 1, V: 1, A: 7, Z: 0 };
@@ -1731,44 +1792,115 @@ with sync_playwright() as p:
           else if (cmd === 'A') { x = v[5]; y = v[6]; }
         }
         const longest = verts.slice().sort((a, b) => Math.abs(b[2] - b[1]) - Math.abs(a[2] - a[1]))[0];
-        // ② 沿真路径取样（getPointAtLength），量两个上角附近的边界：
-        //    贴边侧那个角（屏幕边上）离边界多远 vs 远端那个角离边界多远
-        const side = document.body.classList.contains('dock-left') ? 'left' : 'right';
-        const corner = side === 'left' ? { x: 0, y: 0 } : { x: w, y: 0 };   // 屏幕边缘上的上角
-        const far = side === 'left' ? { x: w, y: 0 } : { x: 0, y: 0 };      // 远离屏幕的上角
+        // ② 沿真路径取样（getPointAtLength）：远端上角离边界多远 + y≈0 处的边界范围
+        const far = side === 'left' ? { x: w, y: 0 } : { x: 0, y: 0 };
         const L = path.getTotalLength();
-        let nearCorner = Infinity, nearFar = Infinity, topMin = Infinity, topMax = -Infinity;
+        let nearFar = Infinity, topMin = Infinity, topMax = -Infinity;
         for (let k = 0; k <= 1200; k++) {
           const p = path.getPointAtLength(L * k / 1200);
-          if (Math.abs(p.y - corner.y) < 30) nearCorner = Math.min(nearCorner, Math.hypot(p.x - corner.x, p.y - corner.y));
           if (Math.abs(p.y - far.y) < 30) nearFar = Math.min(nearFar, Math.hypot(p.x - far.x, p.y - far.y));
           if (p.y < 0.6) { topMin = Math.min(topMin, p.x); topMax = Math.max(topMax, p.x); }
         }
-        return { side, w: +w.toFixed(2), h: +h.toFixed(2), attachX: +longest[0].toFixed(2),
-                 attachLen: +Math.abs(longest[2] - longest[1]).toFixed(2),
-                 nearCorner: +nearCorner.toFixed(2), nearFar: +nearFar.toFixed(2),
-                 topMin: +topMin.toFixed(2), topMax: +topMax.toFixed(2) };
+        const yc = f - s, dArc = 2 * f - Math.sqrt(2 * f * s - s * s);   // y = f−s 高度上肩弧所在的「距贴边距离」
+        return {
+          side, w: +w.toFixed(2), h: +h.toFixed(2), s, f: +f.toFixed(2),
+          attachX: +longest[0].toFixed(2), attachLen: +Math.abs(longest[2] - longest[1]).toFixed(2),
+          nearFar: +nearFar.toFixed(2), topMin: +topMin.toFixed(2), topMax: +topMax.toFixed(2),
+          pts: {
+            edgeTop: inp(E(s), s),                        // 贴边侧上角：(w−1, 1) —— 旧造型这里被挖空
+            edgeBot: inp(E(s), h - s),                    // 贴边侧下角：(w−1, h−1)
+            tongue: inp(E(f - s), s),                     // 舌部顶（贴边侧宽 f 的一条）是材料
+            shoulderOut: inp(E(2 * f + 3 * s), 3 * s),    // 身体顶边上方的肩部空区：(w−2f−3, 3)
+            bodyTop: inp(E(2 * f + 3 * s), f + 3 * s),    // 同一 x、身体顶边下方又回到材料
+            arcIn: inp(E(dArc - 1.2 * s), yc),            // 肩弧内 1.2px 是材料
+            arcOut: inp(E(dArc + 1.2 * s), yc),           // 肩弧外 1.2px 是空区
+            farCorner: inp(side === 'left' ? w - 2 * s : 2 * s, 2 * s),   // 远端角：(2,2) 不在形状里
+          },
+        };
       }"""
-    g = pg.evaluate(GEOM)
-    # 贴边侧：一条贯穿整高的直线贴屏幕边（被上下两端的反向圆角各吃掉 14px）
+    g = pg.evaluate(GEOM, 1)
+    # 贴边侧：一条贯穿整高的直线贴屏幕边（旧造型两端各被挖掉 1/4 圆，用户实测后否掉了它）
     t("贴边侧（右）：直线落在窗口右边缘 x=w 上", g["side"] == "right" and abs(g["attachX"] - g["w"]) <= 1, str(g))
-    t("贴边侧直线长度 = 整高 − 上下各 14px（两端让给反向圆角）",
-      abs(g["attachLen"] - (g["h"] - 28)) <= 1.5, str(g))
-    # 反向圆角：屏幕边缘上那个角，最近的边界点在 14px 外 —— 材料被以该角为圆心、半径 14 的圆挖掉
-    t("上端是反向圆角：边界贴着「屏幕边上的角」画半径 14 的圆（≈14，正常圆角只有 ≈6.2）",
-      abs(g["nearCorner"] - 14) <= 1.5, str(g["nearCorner"]))
-    # 远端：正常的大圆角 R=15，弧心在形状里侧 → 离角 ≈ 15√2−15 = 6.2
-    t("远端是正常圆角：离角 ≈ 6.2（R=15 的凸弧）", abs(g["nearFar"] - 6.21) <= 1.2, str(g["nearFar"]))
-    t("上边缘不到屏幕边：右贴时顶边止于 x = w−14 处", abs(g["topMax"] - (g["w"] - 14)) <= 1.5, str(g))
+    t("贴边侧直线贯通整高（y 0→h，不再被挖角截断）", abs(g["attachLen"] - g["h"]) <= 1.5, str(g))
+    t("贴边侧上下角都是材料：(w−1,1) 与 (w−1,h−1) 在形状内（旧造型这里被挖空）",
+      g["pts"]["edgeTop"] and g["pts"]["edgeBot"], str(g["pts"]))
+    t("舌部顶（贴边侧宽 f=12 的一条）是材料", g["pts"]["tongue"], str(g["pts"]))
+    t("身体顶边上方的肩部空区在形状外 (w−2f−3, 3)", not g["pts"]["shoulderOut"], str(g["pts"]))
+    t("同一 x、身体顶边下方又回到形状里 (w−2f−3, f+3)", g["pts"]["bodyTop"], str(g["pts"]))
+    t("肩弧在点名位置：弧内 1.2px 是材料、弧外 1.2px 不是", g["pts"]["arcIn"] and not g["pts"]["arcOut"],
+      str(g["pts"]))
+    # 远端：正常的大圆角 R=15，弧心在形状里侧（距角 ≈ √(R²+(f+R)²) − R ≈ 15.9）
+    t("远端上角是正常圆角：(2,2) 在形状外", not g["pts"]["farCorner"], str(g["pts"]))
+    t("远端圆角的凸弧边界离角 ≈ 15.9（R=15 的弧心在形状里侧）",
+      abs(g["nearFar"] - 15.89) <= 1.2, str(g["nearFar"]))
+    t("上边缘贯通到屏幕边：顶边止于 x = w，舌部宽 f 从 w−12 起",
+      abs(g["topMax"] - g["w"]) <= 1.2 and abs(g["topMin"] - (g["w"] - 12)) <= 1.2, str(g))
     pg.evaluate("() => { const s = window.__state; s.config.dockSide = 'left'; window.__cb(s); }")
     pg.wait_for_timeout(200)
-    gl = pg.evaluate(GEOM)
+    gl = pg.evaluate(GEOM, 1)
     t("换到左贴：body 换 class + 贴边侧直线跑到 x=0", gl["side"] == "left" and abs(gl["attachX"]) <= 1
       and pg.evaluate("document.body.classList.contains('dock-left')"), str(gl))
-    t("换到左贴：反向圆角挪到左边（屏幕边上的角 (0,0) 附近 ≈14）", abs(gl["nearCorner"] - 14) <= 1.5, str(gl))
-    t("换到左贴：远端仍是正常圆角（≈6.2）", abs(gl["nearFar"] - 6.21) <= 1.2, str(gl))
-    t("左贴时顶边从 x = 14 开始（上下两端沿屏幕边缘各留一段反向圆角）",
-      abs(gl["topMin"] - 14) <= 1.5, str(gl))
+    t("换到左贴：直线同样贯通整高", abs(gl["attachLen"] - gl["h"]) <= 1.5, str(gl))
+    t("换到左贴：贴边侧上下角仍是材料（(1,1) / (1,h−1) 在形状内）",
+      gl["pts"]["edgeTop"] and gl["pts"]["edgeBot"], str(gl["pts"]))
+    t("换到左贴：肩部空区镜像到 (2f+3, 3) 仍在外、身体顶边下方仍在里",
+      not gl["pts"]["shoulderOut"] and gl["pts"]["bodyTop"], str(gl["pts"]))
+    t("换到左贴：肩弧内外一致（镜像）", gl["pts"]["arcIn"] and not gl["pts"]["arcOut"], str(gl["pts"]))
+    t("换到左贴：远端仍是正常圆角（(w−2,2) 在形状外，凸弧离角 ≈15.9）",
+      not gl["pts"]["farCorner"] and abs(gl["nearFar"] - 15.89) <= 1.2, str(gl))
+    t("左贴时顶边从 x = 0（屏幕边）起、到 x = 12（舌部宽 f）止",
+      abs(gl["topMin"]) <= 1.2 and abs(gl["topMax"] - 12) <= 1.2, str(gl))
+
+    print("贴边模式（dock）· 造型随 dockScale 等比（0.75 复测同一套点名）:")
+    pg.evaluate("() => { const s = window.__state; s.config.dockSide = 'right';"
+                " s.config.dockScale = 0.75; window.__cb(s); }")
+    pg.wait_for_timeout(250)
+    g75 = pg.evaluate(GEOM, 0.75)
+    t("0.75 倍：贴边直线仍在右边缘且贯通整高", g75["side"] == "right"
+      and abs(g75["attachX"] - g75["w"]) <= 1 and abs(g75["attachLen"] - g75["h"]) <= 1.5, str(g75))
+    t("0.75 倍：肩弧半径 f = 12 × 0.75 = 9（顶边从 w−9 起）", abs(g75["f"] - 9) <= 0.01
+      and abs(g75["topMin"] - (g75["w"] - 9)) <= 1.2, str(g75))
+    t("0.75 倍：各点名点随比例缩放后结论不变（角上在内 / 肩外在外 / 弧位内外有别 / 远端在圆角外）",
+      g75["pts"]["edgeTop"] and g75["pts"]["edgeBot"] and g75["pts"]["tongue"]
+      and not g75["pts"]["shoulderOut"] and g75["pts"]["bodyTop"]
+      and g75["pts"]["arcIn"] and not g75["pts"]["arcOut"] and not g75["pts"]["farCorner"],
+      str(g75["pts"]))
+    t("0.75 倍：远端圆角 R = 15 × 0.75（凸弧离角 ≈ 15.9 × 0.75）",
+      abs(g75["nearFar"] - 15.89 * 0.75) <= 1.2, str(g75["nearFar"]))
+
+    print("贴边模式（dock）· 圆圈大小（dockScale=0.75）落到 --ds / 盒尺寸 / 上报:")
+    pg.evaluate("() => { const s = window.__state; s.config.dockScale = 1; window.__cb(s); }")   # 先回标准档取基线
+    pg.wait_for_timeout(200)
+    _base = pg.evaluate("""() => {
+        const box = document.querySelector('#dock .dc-top').getBoundingClientRect();
+        const r = document.querySelector('#dock').getBoundingClientRect();
+        return { box: box.width, w: r.width, h: r.height };
+      }""")
+    pg.evaluate("() => { const s = window.__state; s.config.dockScale = 0.75; window.__cb(s); }")
+    pg.wait_for_timeout(250)
+    _sc = pg.evaluate("""() => {
+        const el = document.querySelector('#dock');
+        const box = document.querySelector('#dock .dc-top').getBoundingClientRect();
+        const svg = document.querySelector('#dock .dc-ring').getBoundingClientRect();
+        const r = el.getBoundingClientRect();
+        return { ds: el.style.getPropertyValue('--ds'), box: box.width, svgH: svg.height,
+                 pct: parseFloat(getComputedStyle(document.querySelector('#dock .dc-pct')).fontSize),
+                 w: r.width, h: r.height, wUp: Math.ceil(r.width), hUp: Math.ceil(r.height),
+                 rep: window.__dockSize };
+      }""")
+    t("--ds 落到 #dock 上（0.75）", _sc["ds"] == "0.75", str(_sc))
+    t("圆圈盒按比例：40 → 30", abs(_base["box"] - 40) < 0.6 and abs(_sc["box"] - 30) < 0.6,
+      f'{_base["box"]} → {_sc["box"]}')
+    t("圆环 SVG 等比（40 → 30；viewBox 自动缩放，描边不用改）", abs(_sc["svgH"] - 30) < 0.6, str(_sc["svgH"]))
+    t("百分比数字字号按比例：11 → 8.25", abs(_sc["pct"] - 8.25) < 0.05, str(_sc["pct"]))
+    t("上报的 __dockSize = 缩小后的实测尺寸（重测重报，与 #dock rect 一致）",
+      _sc["rep"] is not None and _sc["rep"]["w"] == _sc["wUp"] and _sc["rep"]["h"] == _sc["hUp"],
+      str(_sc["rep"]))
+    t("整体尺寸随比例（宽 64→48 = ×0.75，高按比例）",
+      abs(_sc["w"] - _base["w"] * 0.75) <= 1.5 and abs(_sc["h"] - _base["h"] * 0.75) <= 3,
+      f'{_base} vs {_sc}')
+    pg.evaluate("() => { const s = window.__state; s.config.dockScale = 1; window.__cb(s); }")   # 还原标准档
+    pg.wait_for_timeout(200)
     pg.screenshot(path="/tmp/r_dock.png")
     # 深浅两套配色：底环与造型描边各有一套，跟着主题走
     dark_pal = pg.evaluate("""() => [
@@ -1822,7 +1954,9 @@ with sync_playwright() as p:
     t("拖动没顺带切账户 / 展开面板", pg.evaluate("window.__activated") is None
       and pg.evaluate("window.__view") is None, str(pg.evaluate("[window.__activated, window.__view]")))
     ctx_before = pg.evaluate("window.__ctx")      # 胶囊那一节已经右键过一次，这里看增量
-    pg.locator("#dock").click(button="right", position={"x": 32, "y": 8})
+    # 点在身体的实心区（y=90 在贴边侧的上下舌部之间）：左上角 (32,8) 在新造型里是肩部空区，
+    # clip-path 之外收不到指针事件
+    pg.locator("#dock").click(button="right", position={"x": 32, "y": 90})
     pg.wait_for_timeout(150)
     t("右键贴边列唤起应用菜单", pg.evaluate("window.__ctx") == ctx_before + 1,
       f"{ctx_before} → {pg.evaluate('window.__ctx')}")
@@ -1845,19 +1979,76 @@ with sync_playwright() as p:
     pg.click("#panel .pane-glm .sub")
     pg.wait_for_timeout(150)
     t("点面板空白：配了贴边 → 回贴边列", pg.evaluate("window.__view") == "dock", str(pg.evaluate("window.__view")))
-    # 贴边列下 Ctrl+滚轮 / Ctrl+0 与胶囊一样不缩放
-    pg.evaluate("() => { const s = window.__state; s.view = 'dock'; s.config.zoom = 1.2; window.__zoom = null; window.__cb(s); }")
-    pg.wait_for_timeout(150)
+    # 贴边列下 Ctrl+滚轮 / Ctrl+0 = 圆圈大小（dockScale）：本地上立即生效 + 落盘；
+    # 视图缩放（面板 / 设置里那套）在这儿仍然不生效
+    print("贴边模式（dock）· Ctrl+滚轮 = 圆圈大小 / Ctrl+0 复位（视图缩放不动）:")
+    pg.evaluate("() => { const s = window.__state; s.view = 'dock'; s.config.dockSide = 'right';"
+                " s.config.zoom = 1.2; s.config.dockScale = 1;"
+                " window.__zoom = null; window.__saved = null; window.__dockSizes = []; window.__cb(s); }")
+    pg.wait_for_timeout(200)
     box = pg.locator("#dock .dc").first.bounding_box()
     pg.mouse.move(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
     pg.keyboard.down("Control")
-    pg.mouse.wheel(0, -100)
+    pg.mouse.wheel(0, -100)          # 向上滚 = 变大
     pg.keyboard.up("Control")
-    pg.keyboard.press("Control+0")
-    pg.wait_for_timeout(150)
-    t("贴边列下 Ctrl+滚轮 / Ctrl+0 都不缩放（与胶囊一致）",
+    pg.wait_for_timeout(250)
+    t("Ctrl+滚轮向上 → 本地上立即变大（--ds 1 → 1.1）",
+      pg.evaluate("document.querySelector('#dock').style.getPropertyValue('--ds')") == "1.1",
+      str(pg.evaluate("document.querySelector('#dock').style.getPropertyValue('--ds')")))
+    t("同时落盘 save({dockScale: 1.1})", pg.evaluate("(window.__saved || {}).dockScale") == 1.1,
+      str(pg.evaluate("window.__saved")))
+    t("圆圈盒跟着变大（44 = 40 × 1.1）",
+      abs(pg.evaluate("document.querySelector('#dock .dc-top').getBoundingClientRect().width") - 44) < 0.6,
+      str(pg.evaluate("document.querySelector('#dock .dc-top').getBoundingClientRect().width")))
+    t("尺寸按新比例重测重报（__dockSizes 又多了一份）",
+      pg.evaluate("window.__dockSizes.length") >= 1 and pg.evaluate("window.__dockSize") is not None,
+      str(pg.evaluate("[window.__dockSizes, window.__dockSize]")))
+    t("视图缩放不受影响（zoom 仍 1.2、没发过 setZoom）",
       pg.evaluate("window.__zoom") is None and pg.evaluate("window.__state.config.zoom") == 1.2,
       str(pg.evaluate("window.__zoom")))
+    pg.evaluate("window.__saved = null")
+    pg.keyboard.down("Control")
+    pg.mouse.wheel(0, 100)           # 向下滚 = 变小
+    pg.keyboard.up("Control")
+    pg.wait_for_timeout(200)
+    t("Ctrl+滚轮向下 → 缩回 1.0 并落盘",
+      pg.evaluate("(window.__saved || {}).dockScale") == 1.0
+      and pg.evaluate("document.querySelector('#dock').style.getPropertyValue('--ds')") == "1",
+      str(pg.evaluate("[window.__saved, document.querySelector('#dock').style.getPropertyValue('--ds')]")))
+    # 夹顶：已在 1.6 再向上滚不动作、不落盘
+    pg.evaluate("() => { const s = window.__state; s.config.dockScale = 1.6; window.__saved = null; window.__cb(s); }")
+    pg.wait_for_timeout(150)
+    pg.keyboard.down("Control")
+    pg.mouse.wheel(0, -100)
+    pg.keyboard.up("Control")
+    pg.wait_for_timeout(150)
+    t("到顶（1.6）再放大不动作、不落盘", pg.evaluate("window.__saved") is None
+      and pg.evaluate("window.__state.config.dockScale") == 1.6, str(pg.evaluate("window.__saved")))
+    # Ctrl+0 复位（先摆一个非 1 的值）
+    pg.evaluate("() => { const s = window.__state; s.config.dockScale = 1.4; window.__saved = null; window.__cb(s); }")
+    pg.wait_for_timeout(150)
+    pg.keyboard.press("Control+0")
+    pg.wait_for_timeout(200)
+    t("Ctrl+0 复位：save({dockScale: 1}) + --ds 立即回 1",
+      pg.evaluate("(window.__saved || {}).dockScale") == 1
+      and pg.evaluate("document.querySelector('#dock').style.getPropertyValue('--ds')") == "1",
+      str(pg.evaluate("[window.__saved, document.querySelector('#dock').style.getPropertyValue('--ds')]")))
+    t("Ctrl+0 也不动视图缩放（zoom 仍 1.2、没发过 setZoom）",
+      pg.evaluate("window.__zoom") is None and pg.evaluate("window.__state.config.zoom") == 1.2,
+      str(pg.evaluate("window.__zoom")))
+    # 胶囊上 Ctrl+滚轮仍是「什么都不做」（既不缩放也不动圆圈大小）
+    pg.evaluate("() => { const s = window.__state; s.view = 'capsule'; s.config.dockScale = 1;"
+                " window.__zoom = null; window.__saved = null; window.__cb(s); }")
+    pg.wait_for_timeout(150)
+    pg.mouse.move(10, 10)
+    pg.keyboard.down("Control")
+    pg.mouse.wheel(0, -100)
+    pg.keyboard.up("Control")
+    pg.wait_for_timeout(150)
+    t("胶囊上 Ctrl+滚轮什么都不做（与旧版一致）",
+      pg.evaluate("window.__saved") is None and pg.evaluate("window.__zoom") is None
+      and pg.evaluate("window.__state.config.dockScale") == 1,
+      str(pg.evaluate("[window.__saved, window.__zoom, window.__state.config.dockScale]")))
 
     print("贴边模式（dock）· 全停用时的空态圆圈:")
     pg.evaluate("""() => {

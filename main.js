@@ -64,6 +64,7 @@ const DEFAULTS = {
   capsuleLayout: 'switch', // switch=每家只显示当前账户（点账户标签切换）| all=每个账户各占一格
   pos: null,            // {x,y} 胶囊左上角
   dock: null,           // {side:'left'|'right', x, y} 贴边位置；非 null 就表示收起态是贴边
+  dockScale: 1,         // 贴边圆圈整体大小（0.6–1.6，Ctrl+滚轮 / 设置页调）——圆环/logo/间距/肩弧全按它缩放
   snapshot: {},         // { [accountId]: 最近一次成功 data }（重启秒显）
   dsRange: '7d',        // DeepSeek 面板图表区间：1h | 24h | 7d | 30d
   dsPollMin: 2,         // 余额高频采样间隔（分钟，0=关闭）：实时读数的分辨率就是它
@@ -83,6 +84,13 @@ function normDock(v) {
   if (typeof v.x !== 'number' || !Number.isFinite(v.x)) return null;
   if (typeof v.y !== 'number' || !Number.isFinite(v.y)) return null;
   return { side: v.side, x: v.x, y: v.y };
+}
+
+/** 贴边圆圈缩放：有限数且落在 [0.6, 1.6] 才认（两位小数存入）；其余一律回 1。
+ *  读取侧（buildState）也走它 —— 手改过的 config.json 不会把圆圈画成 0.1 倍或 8 倍。 */
+function normDockScale(v) {
+  const n = Number(v);
+  return Number.isFinite(n) && n >= 0.6 && n <= 1.6 ? Math.round(n * 100) / 100 : 1;
 }
 
 function mkAccount(provider, id, name, credentials) {
@@ -797,6 +805,7 @@ function buildState() {
       theme: config.theme,
       panelTab: panelTabResolved(),
       dockSide: config.dock ? config.dock.side : null,   // 贴边贴在哪一侧（没贴边 → null）
+      dockScale: normDockScale(config.dockScale),        // 贴边圆圈大小（渲染层写 --ds / 画肩弧都用它）
       capsuleLayout: config.capsuleLayout === 'all' ? 'all' : 'switch',
       dsRange: ['1h', '24h', '7d', '30d'].includes(config.dsRange) ? config.dsRange : '7d',
       dsPollMin: Number(config.dsPollMin) || 0,
@@ -1097,6 +1106,7 @@ function saveGlobal(patch) {
     if (k === 'dsRange') { if (!['1h', '24h', '7d', '30d'].includes(v)) continue; config.dsRange = v; continue; }
     if (k === 'capsuleLayout') { if (!['switch', 'all'].includes(v)) continue; config.capsuleLayout = v; continue; }
     if (k === 'dsPollMin') { const n = Math.round(Number(v)); config.dsPollMin = n >= 0 && n <= 60 ? n : 2; continue; }
+    if (k === 'dockScale') { config.dockScale = normDockScale(v); continue; }
     if (k === 'warnThreshold') { config.warnThreshold = normWarn(v); continue; }
     if (k === 'paceAlert') { config.paceAlert = !!v; continue; }
     config[k] = v;
@@ -1512,7 +1522,8 @@ function bindIpc() {
     clearInterval(timer0);
     if (!wasMoving || !win || win.isDestroyed()) return;   // 点击：位置没变，不必写盘
     // 松手时判定一次贴边（只在胶囊 / dock 上；面板、设置拖到哪儿就是哪儿）：
-    // 判定用窗口当前矩形 —— 屏幕外缘按 workArea 算，两屏之间的接缝不算边缘（见 lib/dock.js）
+    // 判定用窗口当前矩形 —— 所在屏的左 / 右边缘按 workArea 算；两块屏之间的接缝同样算边
+    // （2026-10-08 用户反馈后反转，跨屏拖拽不受影响：吸附只在松手判一次；见 lib/dock.js）
     const view0 = config.view;
     const b0 = win.getBounds();
     const hit = (view0 === 'capsule' || view0 === 'dock') ? dockGeo.snapSide(b0, screen.getAllDisplays()) : null;
@@ -1521,7 +1532,7 @@ function bindIpc() {
       saveConfig();
       applyView('dock');
     } else if (view0 === 'dock') {
-      config.dock = null;                                   // 拖离了屏幕外缘：退回胶囊，落在松手处
+      config.dock = null;                                   // 拖离了可贴的边：退回胶囊，落在松手处
       config.pos = { x: b0.x, y: b0.y };
       saveConfig();
       applyView('capsule');
