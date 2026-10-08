@@ -19,6 +19,11 @@ try {
     capsuleSize: (s) => ipcRenderer.send('capsule:size', s),
     dockSize: (s) => ipcRenderer.send('dock:size', s),   // 贴边内容实测尺寸（dock 不含 PAD）
     panelSize: (s) => ipcRenderer.send('panel:size', s),
+    // 贴边悬停 → 飞出卡片（主进程的第二个透明窗口，?flyout=1）
+    dockHover: (h) => ipcRenderer.send('dock:hover', h),      // { accId, cy } 或 null（离开圆圈）
+    flyoutHover: (b) => ipcRenderer.send('flyout:hover', b),  // 鼠标是否在卡片上
+    flyoutSize: (s) => ipcRenderer.send('flyout:size', s),    // 卡片实测尺寸（= 飞出窗口尺寸）
+    onFlyoutTarget: (cb) => ipcRenderer.on('flyout:target', (_e, t) => cb(t)),   // { pid, accId, side } 或 null
     setView: (v) => ipcRenderer.send('view:set', v),
     setTab: (t) => ipcRenderer.send('tab:set', t),
     setZoom: (z) => ipcRenderer.send('zoom:set', z),

@@ -164,6 +164,14 @@ let dragging = false;         // 拖拽进行中：看门狗静默、主题巡�
 let themeDebounce = 0;
 let dsTimer = null;           // 余额类高频轮询的定时器
 let dsPolling = false;        // 轮询进行中（避免与主周期叠加）
+let flyout = null;            // 第二个透明窗口：贴边悬停圆圈时的详情卡片（?flyout=1）
+let flyoutTarget = null;      // { pid, accId, side } 卡片该展示的账户；null = 无目标（收起）
+let flyoutSize = null;        // 卡片实测尺寸（渲染层上报，含阴影走廊 → 即窗口尺寸）
+let flyoutSizeKey = '';       // 这份尺寸是给哪个账户量的（账户换了就得等新的一份再出场）
+let flyoutCy = 0;             // 悬停圆圈的圆心（相对 dock 窗口顶部）：卡片纵向居中对齐它
+let flyoutHitDock = false;    // 鼠标还在某个圆圈上（dock:hover 非 null）
+let flyoutHitCard = false;    // 鼠标在飞出卡片上（flyout:hover）
+let flyoutHideTimer = 0;      // 待定的隐藏（圆圈与卡片都离开 250ms 后收起）
 
 /** 按账户的运行态：状态机、最近数据、provider 草稿（mem）、解析重试节流 */
 const rt = new Map();
@@ -220,6 +228,9 @@ const CAPSULE_H = 40;
 const DOCK_W = 64;            // 兜底宽（渲染层实测优先）
 const DOCK_ROW_H = 62;        // 每个圆圈占的高度（含间距）
 const DOCK_H_PAD = 40;        // 上下反向圆角延伸区
+// 飞出卡片（悬停详情窗）：贴在 dock 内侧留 8 DIP；离开圆圈与卡片 250ms 才收起
+const FLYOUT_GAP = 8;
+const FLYOUT_HIDE_MS = 250;
 // 胶囊真实尺寸由渲染层实测上报（见 capsule:size）：meta 里的 capsuleW / CAPSULE_H 只用于
 // 「首帧还没测出来」的兜底。写死的宽度会被内容撑破（多账户、余额位数变化、账户名长短），
 // 所以窗口尺寸一律以实测为准 —— 渲染层画多大，窗口就多大。
@@ -377,6 +388,7 @@ function applyView(view, forceDefaultPos) {
   if (view === 'dock' && !config.dock) view = 'capsule';   // 没有贴边位置就没有 dock 可言（别让窗口只剩个坏视图）
   const prevView = config.view;   // 必须在赋值前抓：判断这次是「换视图」还是「胶囊自身长胖了」
   config.view = view;
+  if (view !== 'dock') hideFlyout();   // 详情窗只属于贴边列：展开面板 / 设置、回胶囊都立即收起
   // 展开态按 zoom 等比缩放（内容 setZoomFactor + 窗口尺寸同步乘 zoom）；胶囊与 dock 保持原始大小
   const factor = (view === 'capsule' || view === 'dock') ? 1 : (config.zoom || 1);
   try { win.webContents.setZoomFactor(factor); } catch { }
@@ -485,6 +497,119 @@ function undock() {
   log('取消贴边 →', winState());
 }
 
+/* ---------------- 飞出卡片（贴边悬停圆圈 → 详情窗） ----------------
+ * 悬停详情不靠撑大 dock 窗口（透明窗口改尺寸会漏重绘、圆圈还会跟着跳），而是主进程的第二个
+ * 透明置顶窗口：同一个 index.html 以 ?flyout=1 加载，只画一张卡片（头部 + 该账户的 pane）。
+ * 落点钉在 dock 内侧：与 dock 窗口留 FLYOUT_GAP，纵向以悬停圆圈的圆心为中心，夹进 dock 所在屏
+ * 的工作区。出场用 showInactive（不抢焦点）；只有 view=dock、没在拖拽、菜单没开时才显示。 */
+
+function createFlyout() {
+  flyout = new BrowserWindow({
+    // 首帧兜底尺寸：渲染层量完实测尺寸才算数（show:false，量完才出场）
+    width: SIZES.panel.w + PAD * 2, height: 300,
+    show: false, transparent: true, frame: false,
+    resizable: false, thickFrame: false,
+    skipTaskbar: true, hasShadow: false,
+    focusable: false,               // 悬停卡片不抢焦点：键盘焦点留在用户原来那个窗口里
+    backgroundColor: '#00000000',
+    alwaysOnTop: config.alwaysOnTop,
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
+      contextIsolation: true,
+      sandbox: true,
+      devTools: IS_DEV,
+      spellcheck: false,
+    },
+  });
+  flyout.setAlwaysOnTop(config.alwaysOnTop, 'screen-saver');   // 置顶级别与主窗一致
+  flyout.loadFile(path.join(__dirname, 'renderer', 'index.html'), { query: { flyout: '1' } });
+  flyout.webContents.on('render-gone', (_e, details) => log('FATAL flyout render-gone:', details && details.reason));
+  flyout.on('closed', () => { flyout = null; });
+}
+
+/** 卡片内容取决于哪个账户：账户换了才要重推目标 / 重等尺寸（贴边侧换了不影响内容） */
+const flyoutKey = (t) => (t ? `${t.pid}:${t.accId}` : '');
+
+function sendFlyoutTarget() {
+  if (!flyout || flyout.isDestroyed()) return;
+  flyout.webContents.send('flyout:target', flyoutTarget);
+}
+
+/** 卡片落点：dock 内侧 FLYOUT_GAP，纵向以悬停圆圈的圆心为中心，夹进 dock 所在屏的工作区 */
+function flyoutBounds(size) {
+  const d = win.getBounds();
+  let x = config.dock.side === 'left' ? d.x + d.width + FLYOUT_GAP : d.x - FLYOUT_GAP - size.w;
+  let y = d.y + flyoutCy - size.h / 2;
+  const wa = screen.getDisplayMatching(d).workArea;
+  x = Math.round(Math.min(Math.max(x, wa.x), wa.x + wa.width - size.w));
+  y = Math.round(Math.min(Math.max(y, wa.y), wa.y + wa.height - size.h));
+  return { x, y, width: size.w, height: size.h };
+}
+
+/** 条件齐全就摆到位置并出场：view=dock、没在拖拽、没开菜单、有目标、且有「这个目标」的实测尺寸 */
+function showFlyout() {
+  if (!flyout || flyout.isDestroyed() || !flyoutTarget || !flyoutSize) return;
+  if (flyoutSizeKey !== flyoutKey(flyoutTarget)) return;   // 尺寸还是上一个账户量的：等新的一份
+  if (config.view !== 'dock' || !config.dock || dragging || menuOpen) return;
+  const b = flyoutBounds(flyoutSize);
+  try {
+    // 与主窗同一套：Windows 透明窗口 resizable:false 时改尺寸会静默失效 → 临时解锁再锁回
+    flyout.setResizable(true);
+    flyout.setBounds(b);
+    flyout.setResizable(false);
+    flyout.setAlwaysOnTop(config.alwaysOnTop, 'screen-saver');
+    flyout.showInactive();   // 不抢焦点
+    setImmediate(() => { try { flyout.webContents.invalidate(); } catch { /* 销毁竞态，忽略 */ } });
+  } catch { /* 窗口销毁竞态，忽略 */ }
+}
+
+function cancelFlyoutHide() {
+  if (flyoutHideTimer) { clearTimeout(flyoutHideTimer); flyoutHideTimer = 0; }
+}
+
+/** 收起：目标清空并推给飞出窗（卡片清掉内容，下次出场必定是新目标的），窗口隐藏 */
+function hideFlyout() {
+  cancelFlyoutHide();
+  flyoutHitDock = false;
+  flyoutHitCard = false;
+  flyoutTarget = null;
+  sendFlyoutTarget();
+  if (flyout && !flyout.isDestroyed() && flyout.isVisible()) flyout.hide();
+}
+
+/** 圆圈与卡片都离开了才开始计时；任一侧回来就取消（250ms 是给指针跨越那道间隙的时间） */
+function maybeHideFlyout() {
+  if (flyoutHitDock || flyoutHitCard) return cancelFlyoutHide();
+  if (flyoutHideTimer) return;
+  flyoutHideTimer = setTimeout(() => {
+    flyoutHideTimer = 0;
+    if (flyoutHitDock || flyoutHitCard) return;   // 这 250ms 里又回来了
+    hideFlyout();
+  }, FLYOUT_HIDE_MS);
+}
+
+/** 圆圈悬停（渲染层 → `dock:hover`）：null = 指针离开圆圈 */
+function onDockHover(h) {
+  const acc = (h && typeof h === 'object' && h.accId) ? getAcc(String(h.accId)) : null;
+  const cy = Number(h && h.cy);
+  if (!acc || acc.enabled === false || !Number.isFinite(cy)) {   // 离开圆圈（或认不出的负载）
+    flyoutHitDock = false;
+    maybeHideFlyout();
+    return;
+  }
+  flyoutHitDock = true;
+  cancelFlyoutHide();
+  // 非 dock 视图 / 拖拽中 / 菜单开着：不显示（离开 dock 时飞窗已经被下面几处立即收掉了）
+  if (config.view !== 'dock' || !config.dock || dragging || menuOpen) return;
+  flyoutCy = cy;
+  const next = { pid: acc.provider, accId: acc.id, side: config.dock.side };
+  const changed = flyoutKey(next) !== flyoutKey(flyoutTarget);
+  flyoutTarget = next;    // 贴边侧可能跟着 dock 挪了，记新的（内容只由账户决定）
+  // 账户换了才重推目标：渲染层据此重画卡片，并重报一份尺寸（主进程只按「这个账户」量过的尺寸摆位）
+  if (changed) sendFlyoutTarget();
+  showFlyout();           // 尺寸已经是这个账户的 → 立即摆位（否则等渲染层上报）
+}
+
 /* 置顶自愈：样式操作/拖拽/其他置顶窗口都可能把本窗挤出置顶带，
    关键节点 + 定时重申（setAlwaysOnTop/moveTop 均不激活窗口、不抢焦点）；
    拖拽进行中静默——中途 SetWindowPos 会打断拖拽节奏 */
@@ -493,6 +618,11 @@ function assertTopmost() {
   try {
     win.setAlwaysOnTop(true, 'screen-saver');
     win.moveTop();
+    // 飞出卡片同理（它只在悬停时可见）：样式操作 / 别的置顶窗都可能把它挤下去
+    if (flyout && !flyout.isDestroyed() && flyout.isVisible()) {
+      flyout.setAlwaysOnTop(true, 'screen-saver');
+      flyout.moveTop();
+    }
   } catch { /* 窗口销毁竞态，忽略 */ }
 }
 
@@ -683,7 +813,9 @@ function buildState() {
 }
 
 function broadcast() {
-  if (win && !win.isDestroyed()) win.webContents.send('state', buildState());
+  const s = buildState();
+  if (win && !win.isDestroyed()) win.webContents.send('state', s);
+  if (flyout && !flyout.isDestroyed()) flyout.webContents.send('state', s);   // 飞出卡片跟主窗同一份状态
   updateTray();
 }
 
@@ -976,6 +1108,7 @@ function saveGlobal(patch) {
   }
   if ('alwaysOnTop' in (patch || {}) && win) {
     win.setAlwaysOnTop(config.alwaysOnTop, 'screen-saver');
+    if (flyout && !flyout.isDestroyed()) flyout.setAlwaysOnTop(config.alwaysOnTop, 'screen-saver');   // 飞出窗跟主窗同一个置顶级别
   }
   if ('intervalMin' in (patch || {}) || 'warnThreshold' in (patch || {})) {
     // 阈值/节奏变更后清提醒去重：新阈值要能立刻表达（下一轮成功刷新即按新阈值判）
@@ -1165,6 +1298,7 @@ function accMenu({ provider }) {
       click: () => { picked = null; setView('settings'); },
     });
     menuOpen = true;
+    hideFlyout();   // 菜单弹出时详情窗立即收起（菜单与卡片同时悬着很乱，且菜单没有关闭回调前的遮挡）
     Menu.buildFromTemplate(template).popup({
       window: win || undefined,
       callback: () => {
@@ -1242,7 +1376,11 @@ function createWindow() {
   setTimeout(() => { if (!rendererReady) log('WARN renderer:ready 5s 未到达（preload/app.js 崩溃?）'); }, 5000);
 
   // 失焦不再自动收起：收起只由「点击浮窗非按钮处 / Esc / 托盘」触发
-  win.on('closed', () => { win = null; });
+  win.on('closed', () => {
+    win = null;
+    // 飞出卡片是主窗的悬停附件：主窗没了它没有存在的意义（也不该留成孤儿窗）
+    if (flyout && !flyout.isDestroyed()) flyout.destroy();
+  });
 
   // v0.1.1 停用 Win11 亚克力：与透明无边框窗口组合存在「窗口收不到任何鼠标输入」的已知问题
 
@@ -1253,6 +1391,7 @@ function createWindow() {
 
 function popupWindowMenu() {
   menuOpen = true;
+  hideFlyout();   // 右键菜单弹出时详情窗立即收起
   const tpl = [
     { label: '设置', click: () => setView('settings') },
   ];
@@ -1402,6 +1541,7 @@ function bindIpc() {
   };
   ipcMain.on('win:drag-start', (_e, { gx, gy }) => {
     if (!win || win.isDestroyed()) return;
+    hideFlyout();   // 开始拖拽（按下即算）：详情窗立即收起，不跟着窗口跑
     if (dragCtx) stopDrag();
     const [wx, wy] = win.getPosition();
     const [bw, bh] = win.getSize();
@@ -1441,7 +1581,30 @@ function bindIpc() {
   ipcMain.on('capsule:size', (_e, sz) => setCapsuleBox(sz));
   ipcMain.on('dock:size', (_e, sz) => setDockBox(sz));
   ipcMain.on('panel:size', (_e, sz) => setPanelBoxH(sz && sz.h));
-  ipcMain.on('renderer:ready', () => {
+  /* ---------- 贴边悬停 → 飞出卡片 ---------- */
+  ipcMain.on('dock:hover', (_e, h) => onDockHover(h));
+  ipcMain.on('flyout:hover', (_e, v) => {
+    flyoutHitCard = !!v;
+    if (flyoutHitCard) cancelFlyoutHide(); else maybeHideFlyout();
+  });
+  ipcMain.on('flyout:size', (_e, sz) => {
+    const w = Math.round(Number(sz && sz.w) || 0);
+    const h = Math.round(Number(sz && sz.h) || 0);
+    if (!(w > 0) || !(h > 0) || w > 4000 || h > 4000) return;   // 渲染层没布局完 / 离谱值直接丢
+    // 渲染层随尺寸带了「这份量的是谁」（pid/accId）：与当前目标不匹配就整份丢掉（不记、不配对、不出场）——
+    // 「悬停 A → 快速划到 B → 尺寸迟到」时卡片绝不拿别人的尺寸亮一次，缓存也不被顶替（flyoutSize 与 flyoutSizeKey 永远同源）。
+    if (!flyoutTarget || !sz || flyoutKey({ pid: sz.pid, accId: sz.accId }) !== flyoutKey(flyoutTarget)) return;
+    flyoutSize = { w, h };   // 只记配对成功的这一份
+    flyoutSizeKey = flyoutKey(flyoutTarget);
+    showFlyout();   // 拿到「这个目标」的尺寸才出场（也是换账户后重新摆位的信号）
+  });
+  ipcMain.on('renderer:ready', (e) => {
+    // 飞出窗的渲染层也发这一条：它只负责卡片，不能走主窗那套出场流程（会去动主窗的视图/主题/刷新）
+    if (flyout && !flyout.isDestroyed() && e && e.sender === flyout.webContents) {
+      log('flyout renderer:ready ✓');
+      if (flyoutTarget) sendFlyoutTarget();   // 就绪前攒下的悬停目标补发一发
+      return;
+    }
     rendererReady = true;
     log('renderer:ready ✓ · 静默出场不抢焦点');
     applyView(config.dock ? 'dock' : 'capsule'); // 收起态：上次是贴边就回贴边，否则胶囊
@@ -1481,6 +1644,8 @@ if (!gotLock) {
     if (!IS_PORTABLE) app.setLoginItemSettings({ openAtLogin: !!config.autoStart, args: ['--hidden'] });
     try { createWindow(); log('window created'); }
     catch (e) { log('FATAL createWindow:', e); }
+    try { createFlyout(); log('flyout created'); }   // 悬停详情窗：提前建好，悬停时量完尺寸就能出场
+    catch (e) { log('FATAL createFlyout:', e); }
     try { createTray(); log('tray created'); }
     catch (e) { log('FATAL createTray:', e); }
     try { bindIpc(); log('ipc bound'); } catch (e) { log('FATAL bindIpc:', e); }

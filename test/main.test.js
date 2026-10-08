@@ -25,9 +25,18 @@ const posted = [];        // 主进程推给渲染层的状态
 const handlers = {};      // 注册过的 IPC
 const screenHandlers = {}; // 注册过的 screen 事件
 const powerHandlers = {};  // 注册过的 powerMonitor 事件（唤醒/解锁后的自检）
-let winOpts = {};          // BrowserWindow 构造参数（验初建位置夹取）
+let winOpts = {};          // 主窗的 BrowserWindow 构造参数（验初建位置夹取）
+let mainHandlers = {};     // 主窗注册的事件回调（'closed' 的联动要用）
+let mainShownInactive = 0; // 主窗出场计数：renderer:ready 的主窗分支会调 showInactive，分流用例拿它当「主窗流程没被触发」的证据
 let trayMenu = null;       // 最近一次托盘菜单（Tray.setContextMenu 收到的那份）
 let trayTip = '';
+// 飞出窗（贴边悬停详情）：与主窗分开记账 —— 两个窗口的 bounds / 显隐 / 收发的消息互不串
+let flyoutOpts = null;     // 飞出窗构造参数
+let flyoutStub = null;     // 飞出窗桩（showInactive / hide / destroy 计数）
+let flyoutLoaded = null;   // 飞出窗 loadFile 的参数（file + query）
+let flyoutBounds = { x: 0, y: 0, width: 350, height: 300 };
+const flyoutHandlers = {}; // 飞出窗注册的事件回调（'closed'）
+const flyoutSent = {};     // 推给飞出窗的消息：{ [channel]: [payload…] }
 // 主屏工作区：测试可临时改小，模拟「扩展屏被拔掉、只剩一块小屏」（拔屏瞬间的列表就是这副样子）
 let primaryWA = { x: 0, y: 0, width: 1920, height: 1040 };
 // 附加屏（并排 / 拔掉都靠它增删）：主进程三个显示器入口读的是同一份列表
@@ -56,14 +65,42 @@ function t(name, cond, extra) {
 const noop = () => { };
 
 const mkWindow = () => ({
-  webContents: { on: noop, send: (_c, s) => posted.push(s), setZoomFactor: noop, toggleDevTools: noop },
-  on: noop, loadFile: noop, setAlwaysOnTop: noop, moveTop: noop, show: noop, showInactive: noop,
+  webContents: { on: noop, send: (_c, s) => posted.push(s), setZoomFactor: noop, toggleDevTools: noop, invalidate: noop },
+  on: (ev, cb) => { mainHandlers[ev] = cb; }, loadFile: noop, setAlwaysOnTop: noop, moveTop: noop,
+  show: noop, showInactive: () => { mainShownInactive++; },
   setResizable: noop, isDestroyed: () => false, isVisible: () => true,
   setBounds: (b) => { windowBounds = Object.assign({}, windowBounds, b); },
   getBounds: () => windowBounds,
   getPosition: () => [windowBounds.x, windowBounds.y],
   getSize: () => [windowBounds.width, windowBounds.height],
 });
+
+/** 飞出窗的桩：显隐 / 位置 / 收到的主进程消息都单独记，测试逐条断言 */
+const mkFlyoutWindow = () => {
+  const rec = {
+    shownInactive: 0, shown: 0, hidden: 0, destroyed: false, visible: false, alwaysOnTop: [],
+    webContents: {
+      on: noop, setZoomFactor: noop, toggleDevTools: noop, invalidate: noop,
+      send: (ch, payload) => { (flyoutSent[ch] = flyoutSent[ch] || []).push(payload); },
+    },
+    on: (ev, cb) => { flyoutHandlers[ev] = cb; },
+    loadFile: (f, o) => { flyoutLoaded = { file: f, opts: o }; },
+    setAlwaysOnTop: (v, lvl) => { rec.alwaysOnTop.push([v, lvl]); },
+    moveTop: noop,
+    show: () => { rec.shown++; rec.visible = true; },
+    showInactive: () => { rec.shownInactive++; rec.visible = true; },
+    hide: () => { rec.hidden++; rec.visible = false; },
+    isVisible: () => rec.visible,
+    isDestroyed: () => rec.destroyed,
+    destroy: () => { rec.destroyed = true; rec.visible = false; },
+    setResizable: noop,
+    setBounds: (b) => { flyoutBounds = Object.assign({}, b); },
+    getBounds: () => flyoutBounds,
+    getPosition: () => [flyoutBounds.x, flyoutBounds.y],
+    getSize: () => [flyoutBounds.width, flyoutBounds.height],
+  };
+  return rec;
+};
 
 const electronStub = {
   app: {
@@ -76,8 +113,14 @@ const electronStub = {
     quit: noop,
   },
   // 真窗口是认构造参数里的 x/y/width/height 的：桩也得认，否则「预置越界 pos」的用例里
-  // 窗口会停在桩的初始坐标上，后面锚左边/锚右边的判断全跟着错
+  // 窗口会停在桩的初始坐标上，后面锚左边/锚右边的判断全跟着错。
+  // 第二个窗口（飞出窗）靠 focusable:false 认出来 —— 那是它唯一的、也是工单要求的标记
   BrowserWindow: function (o) {
+    if (o && o.focusable === false) {
+      flyoutOpts = o;
+      flyoutStub = mkFlyoutWindow();
+      return flyoutStub;
+    }
     Object.assign(winOpts, o);
     windowBounds = { x: o.x, y: o.y, width: o.width, height: o.height };
     return mkWindow();
@@ -748,6 +791,212 @@ async function bootOnly(dir) {
   t('切页签触发重排：面板回到贴边侧（贴边锚定仍有效）',
     windowBounds.x + windowBounds.width === 1920 && windowBounds.y === 260 && windowBounds.height === 330 + 24,
     JSON.stringify(windowBounds));
+
+  console.log('\n贴边悬停飞出窗（dock:hover → flyout）:');
+  const fxShown = () => (flyoutStub ? flyoutStub.shownInactive : -1);
+  const fxHidden = () => (flyoutStub ? flyoutStub.hidden : -1);
+  const fxLastTarget = () => (flyoutSent['flyout:target'] || []).slice(-1)[0];
+
+  t('飞出窗已建好（透明 / 无框 / 不可调 / 无任务栏 / 无阴影 / 不抢焦点 / 同一 preload）',
+    !!flyoutStub && !!flyoutOpts
+    && flyoutOpts.show === false && flyoutOpts.transparent === true && flyoutOpts.frame === false
+    && flyoutOpts.resizable === false && flyoutOpts.skipTaskbar === true && flyoutOpts.hasShadow === false
+    && flyoutOpts.focusable === false
+    && /preload\.js$/.test(flyoutOpts.webPreferences.preload), JSON.stringify(flyoutOpts));
+  t('飞出窗加载 index.html（?flyout=1 进卡片模式）',
+    !!flyoutLoaded && /index\.html$/.test(flyoutLoaded.file)
+    && !!flyoutLoaded.opts && !!flyoutLoaded.opts.query && flyoutLoaded.opts.query.flyout === '1',
+    JSON.stringify(flyoutLoaded));
+
+  // 前面「取消贴边」的右键菜单用例没有模拟「菜单关闭」：原生菜单关闭时一定会回调，桩里得手动补一发，
+  // 否则 menuOpen 一直是 true —— 按约定那时详情窗不许出场，后面的悬停用例就全被挡住
+  lastMenuClose();
+
+  // 前置：找回窗口（清掉贴边记忆）→ 拖到右缘 8 DIP 内松手 → 贴右（y = 320）
+  const recallFx = (trayMenu && trayMenu.template || []).find((i) => i.label === '找回窗口');
+  if (recallFx) recallFx.click();
+  await wait(80);
+  const capFx = windowBounds.width;
+  await dragWindowTo(1920 - capFx - 8, 320);
+  t('（前置）贴到右边（dock 窗口 = 早前上报的 60×300）',
+    (await state()).view === 'dock' && windowBounds.x === 1860 && windowBounds.y === 320
+    && windowBounds.width === 60 && windowBounds.height === 300, JSON.stringify(windowBounds));
+
+  const fxAccs = (await state()).config.accounts.filter((a) => a.provider === 'glm' && a.enabled !== false);
+  const fxAcc = fxAccs[0].id;
+  const fxAccB = fxAccs[1].id;
+
+  // ① 贴右：悬停圆圈 + 目标实测尺寸 → 卡片出现在 dock 左边 8 DIP，纵向以圆心为中心
+  const n1 = fxShown();
+  call('dock:hover', { accId: fxAcc, cy: 100 });
+  await wait(60);
+  t('只有悬停、还没有实测尺寸：先不出场', fxShown() === n1, String(fxShown()));
+  call('flyout:size', { w: 350, h: 300, pid: 'glm', accId: fxAcc });
+  await wait(60);
+  t('拿到该目标的实测尺寸 → showInactive 出场（不抢焦点）', fxShown() === n1 + 1, String(fxShown()));
+  t('dock 贴右：飞出窗右边 = dock 左边 − 8',
+    flyoutBounds.x + flyoutBounds.width === windowBounds.x - 8, JSON.stringify([flyoutBounds, windowBounds]));
+  t('纵向中心 = dock.y + cy（悬停圆圈的圆心）',
+    flyoutBounds.y + flyoutBounds.height / 2 === windowBounds.y + 100, JSON.stringify(flyoutBounds));
+  t('尺寸原样采用上报值（350×300）',
+    flyoutBounds.width === 350 && flyoutBounds.height === 300, JSON.stringify(flyoutBounds));
+  t('悬停期间 dock 窗口纹丝不动（尺寸 / 位置都不变）',
+    windowBounds.x === 1860 && windowBounds.y === 320 && windowBounds.width === 60 && windowBounds.height === 300,
+    JSON.stringify(windowBounds));
+  t('推给飞出窗的目标 = { pid, accId, side }',
+    JSON.stringify(fxLastTarget()) === JSON.stringify({ pid: 'glm', accId: fxAcc, side: 'right' }),
+    JSON.stringify(fxLastTarget()));
+  t('state 也推给飞出窗（卡片跟主窗同一份状态）', (flyoutSent['state'] || []).length > 0);
+
+  // ② 换到同家的另一个圆圈：目标改推另一个账户，尺寸按新目标重报后才摆位
+  call('dock:hover', { accId: fxAccB, cy: 160 });
+  await wait(40);
+  t('换圆圈 → 目标换成另一个账户（卡片内容跟着悬停的账户走）',
+    JSON.stringify(fxLastTarget()) === JSON.stringify({ pid: 'glm', accId: fxAccB, side: 'right' }),
+    JSON.stringify(fxLastTarget()));
+  call('flyout:size', { w: 350, h: 260, pid: 'glm', accId: fxAccB });
+  await wait(40);
+  t('新目标的尺寸到位 → 位置跟着新尺寸与圆心走',
+    flyoutBounds.width === 350 && flyoutBounds.height === 260
+    && flyoutBounds.y + flyoutBounds.height / 2 === windowBounds.y + 160, JSON.stringify(flyoutBounds));
+
+  // ③ 近屏底：贴到右下角（dock 的 y 被夹到 740）→ 卡片被夹进工作区，底边不出屏
+  await dragWindowTo(1920 - windowBounds.width - 8, 900);
+  t('（前置）贴到右下角（y 夹到 1040−300）',
+    (await state()).view === 'dock' && windowBounds.y === 740, JSON.stringify(windowBounds));
+  call('dock:hover', { accId: fxAccB, cy: 290 });
+  await wait(30);
+  call('flyout:size', { w: 350, h: 300, pid: 'glm', accId: fxAccB });
+  await wait(30);
+  t('近屏底：飞出窗被夹进工作区（底边不出屏）',
+    flyoutBounds.y + flyoutBounds.height === 1040 && flyoutBounds.y === 740, JSON.stringify(flyoutBounds));
+
+  // ④ 离开圆圈与卡片：两者都离开满 250ms 才收起
+  const h0 = fxHidden();
+  call('dock:hover', null);
+  await wait(100);
+  t('离开圆圈 250ms 内不隐藏（留出鼠标挪到卡片的时间）', fxHidden() === h0, String(fxHidden()));
+  call('flyout:hover', true);   // 鼠标已经挪到卡片上
+  await wait(300);              // 超过 250ms
+  t('鼠标在卡片上：一直显示（待定的收起被取消）', fxHidden() === h0, String(fxHidden()));
+  call('flyout:hover', false);
+  await wait(100);
+  t('卡片也刚离开、还没满 250ms：仍显示', fxHidden() === h0, String(fxHidden()));
+  await wait(220);
+  t('两侧都离开 250ms 后：隐藏', fxHidden() === h0 + 1, String(fxHidden()));
+  t('收起时目标清空（推 null，卡片清内容）', fxLastTarget() === null, JSON.stringify(fxLastTarget()));
+
+  // ⑤ 重新悬停同一圆圈（尺寸还留着）→ 立即出场；切视图 / 开始拖拽都立即收起
+  const n5 = fxShown();
+  call('dock:hover', { accId: fxAccB, cy: 100 });
+  await wait(40);
+  t('重新悬停同一圆圈：尺寸还在，立即出场（不必等重报）', fxShown() === n5 + 1, String(fxShown()));
+  const h5 = fxHidden();
+  call('view:set', 'panel');
+  await wait(40);
+  t('视图离开 dock（展开面板）→ 飞出窗立即隐藏', fxHidden() === h5 + 1 && !flyoutStub.visible, String(fxHidden()));
+  t('（前置）此刻在面板视图', (await state()).view === 'panel');
+
+  const n6 = fxShown();
+  call('dock:hover', { accId: fxAccB, cy: 120 });
+  call('flyout:size', { w: 350, h: 300, pid: 'glm', accId: fxAccB });
+  await wait(50);
+  t('非 dock 视图下收到 dock:hover → 不显示', fxShown() === n6, String(fxShown()));
+  t('（非 dock 视图下也不推目标：卡片别被点亮）', fxLastTarget() === null, JSON.stringify(fxLastTarget()));
+
+  await call('view:set', 'capsule');   // config.dock 非空 → 按 dock 处理
+  await wait(60);
+  t('（前置）回到贴边列', (await state()).view === 'dock');
+  const n7 = fxShown();
+  call('dock:hover', { accId: fxAccB, cy: 100 });
+  await wait(40);
+  t('（前置）卡片又在场上', fxShown() === n7 + 1 && flyoutStub.visible, String(fxShown()));
+  const h7 = fxHidden();
+  cursor = { x: windowBounds.x + 30, y: windowBounds.y + 150 };   // 原地按下（不越死区）
+  call('win:drag-start', { gx: cursor.x, gy: cursor.y });
+  await wait(40);
+  t('开始拖拽 → 飞出窗立即隐藏（不跟着窗口跑）',
+    fxHidden() === h7 + 1 && !flyoutStub.visible, String(fxHidden()));
+  call('win:drag-end');
+  await wait(40);
+  t('拖拽结束（原地没动）后视图仍是 dock', (await state()).view === 'dock');
+
+  // ⑥ 贴左：卡片出现在 dock 的右侧
+  await dragWindowTo(8, 300);
+  t('（前置）已贴到左边', (await state()).config.dockSide === 'left' && windowBounds.x === 0,
+    JSON.stringify([windowBounds, (await state()).config.dockSide]));
+  call('dock:hover', { accId: fxAcc, cy: 90 });
+  await wait(30);
+  call('flyout:size', { w: 350, h: 300, pid: 'glm', accId: fxAcc });
+  await wait(30);
+  t('dock 贴左：飞出窗左边 = dock 右边 + 8',
+    flyoutBounds.x === windowBounds.x + windowBounds.width + 8, JSON.stringify([flyoutBounds, windowBounds]));
+  t('纵向中心 = dock.y + cy', flyoutBounds.y + flyoutBounds.height / 2 === windowBounds.y + 90,
+    JSON.stringify(flyoutBounds));
+
+  // 换圆圈瞬间的迟到旧尺寸：目标已换成 B，A 的尺寸才到 → 不配对、不出场（审查发现 1）
+  // 复现：首次悬停渲染慢，尺寸还没上报指针就划到了下一个圆圈 —— 卡片在幕后等 B 的尺寸，
+  // 不能拿 A 的尺寸在 B 的位置亮一次再校正
+  call('view:set', 'panel');            // 离开 dock：卡片收起、目标清空（已配对记录留在主进程）
+  await wait(40);
+  await call('view:set', 'capsule');    // config.dock 非空 → 回贴边列
+  await wait(40);
+  const n8 = fxShown();
+  call('dock:hover', { accId: fxAccB, cy: 200 });   // 目标挂上 B：A 的尺寸还在，不拿来给 B 出场
+  await wait(30);
+  t('（前置）目标换成 B、还没有 B 的尺寸：卡片不出场',
+    fxShown() === n8 && !flyoutStub.visible, JSON.stringify([fxShown(), flyoutStub.visible]));
+  const bBefore = Object.assign({}, flyoutBounds);
+  call('flyout:size', { w: 350, h: 220, pid: 'glm', accId: fxAcc });   // A 的尺寸迟到（key 不匹配）
+  await wait(40);
+  t('A 的迟到尺寸到达：不配对、不出场、几何没被动过',
+    fxShown() === n8 && !flyoutStub.visible && JSON.stringify(flyoutBounds) === JSON.stringify(bBefore),
+    JSON.stringify([flyoutBounds, bBefore, fxShown(), flyoutStub.visible]));
+  call('dock:hover', { accId: fxAccB, cy: 200 });   // 再踩一脚出场判定：若这份尺寸被记成了 B 的，这里就会亮
+  await wait(30);
+  t('这份尺寸也没被记成 B 的（再触发出场判定仍不出场）',
+    fxShown() === n8 && !flyoutStub.visible, JSON.stringify([fxShown(), flyoutStub.visible]));
+  call('flyout:size', { w: 350, h: 260, pid: 'glm', accId: fxAccB });  // B 的真尺寸
+  await wait(40);
+  t('B 的尺寸随后到达：用 B 的尺寸正常出场（圆心对准 cy）',
+    fxShown() === n8 + 1 && flyoutStub.visible && flyoutBounds.width === 350 && flyoutBounds.height === 260
+    && flyoutBounds.y + flyoutBounds.height / 2 === windowBounds.y + 200, JSON.stringify(flyoutBounds));
+
+  // renderer:ready 的 sender 分流：飞出窗的 ready 只补发攒下的目标，不走主窗那套出场流程（审查发现 2）
+  const tgt0 = (flyoutSent['flyout:target'] || []).length;
+  const wShow0 = mainShownInactive;
+  handlers['renderer:ready']({ sender: flyoutStub.webContents });
+  await wait(80);
+  t('飞出窗的 renderer:ready：就绪前攒下的悬停目标补发一份',
+    (flyoutSent['flyout:target'] || []).length === tgt0 + 1
+    && JSON.stringify(fxLastTarget()) === JSON.stringify({ pid: 'glm', accId: fxAccB, side: 'left' }),
+    JSON.stringify([fxLastTarget(), (flyoutSent['flyout:target'] || []).length - tgt0]));
+  t('主窗的出场流程没被触发（win.showInactive 一次没多：applyView / refresh 那套没跑）',
+    mainShownInactive === wShow0, JSON.stringify([mainShownInactive, wShow0]));
+
+  // 失配的迟到尺寸整份丢掉、不许顶替已配对的缓存（T5c / 审查中危险点：缓存与 key 永远同源）
+  // 复现：悬停 A（A 尺寸配对出场）→ 划到 B（B 首帧慢、尺寸未报）→ 离开 250ms 收起（目标清空、key 仍 f(A)）
+  // → B 的尺寸这才迟到到达 → 回悬 A：若缓存被顶替，key 门开着，卡片会用 B 的尺寸亮一次再校正。
+  call('dock:hover', { accId: fxAcc, cy: 90 });   // 目标换回 A（B 的尺寸没到，先不出场）
+  await wait(30);
+  call('flyout:size', { w: 350, h: 300, pid: 'glm', accId: fxAcc });   // A 的真尺寸 → 与 A 配对
+  await wait(40);
+  call('dock:hover', { accId: fxAccB, cy: 200 });   // 划到 B：冷启动，尺寸还没上报
+  call('dock:hover', null);                         // 指针离开 dock
+  await wait(300);                                  // 满 250ms 收起：目标清空，已配对记录留在主进程
+  call('flyout:size', { w: 350, h: 220, pid: 'glm', accId: fxAccB });  // B 的尺寸迟到（此刻没有目标）
+  await wait(40);
+  const n9 = fxShown();
+  call('dock:hover', { accId: fxAcc, cy: 90 });     // 回悬 A：用缓存立即出场
+  await wait(40);
+  t('失配的迟到尺寸整份丢掉：回悬 A 用 A 自己的尺寸出场（不是迟到 B 的 220 高）',
+    fxShown() === n9 + 1 && flyoutBounds.width === 350 && flyoutBounds.height === 300
+    && flyoutBounds.y + flyoutBounds.height / 2 === windowBounds.y + 90,
+    JSON.stringify([flyoutBounds, fxShown()]));
+
+  // ⑦ 主窗 closed：飞出窗一起销毁（不留孤儿窗）
+  if (mainHandlers.closed) mainHandlers.closed();
+  t('主窗 closed → 飞出窗一起销毁', !!flyoutStub && flyoutStub.destroyed === true);
 
   console.log('\n模拟重启（子进程重新读盘启动）:');
   const b1 = bootWith({ accounts: [], view: 'dock', dock: { side: 'right', x: 100, y: 300 } });

@@ -12,6 +12,7 @@ import json, pathlib, re, sys, threading, functools, http.server
 from playwright.sync_api import sync_playwright
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
+IDX = "/renderer/index.html"          # 舞台里每个 iframe 的默认页面（飞出窗加 ?flyout=1）
 OUT = ROOT / "docs"
 STAGE = ROOT / "_shots_stage.html"
 
@@ -157,7 +158,7 @@ def dock_state(theme, side):
 
 def fit_dock(pg, frame_name, stage_w, stage_h, side):
     """贴边列也是 max-content：iframe 按实测尺寸改，并**贴到舞台对应那条边**（模拟屏幕边缘），
-    这样截图里才看得出反向圆角是贴着画面边缘长出来的"""
+    这样截图里才看得出反向圆角是贴着画面边缘长出来的。返回实测尺寸（飞出卡片要按它摆位）"""
     fr = next(f for f in pg.frames if f.name == frame_name)
     fr.wait_for_function("window.__dockSize")
     sz = fr.evaluate("window.__dockSize")
@@ -169,6 +170,30 @@ def fit_dock(pg, frame_name, stage_w, stage_h, side):
         el.style.top = ((sh - sz.h) / 2) + 'px';
       }""", [sz, side, stage_w, stage_h])
     pg.wait_for_timeout(150)
+    return sz
+
+
+def place_flyout(pg, frame_name, cfg, target, dock_left, dock_top, dock_cy):
+    """飞出卡片：推状态 + 悬停目标，再按主进程同一套落点公式把 iframe 摆到 dock 内侧
+    （x = dock 左边 − 8 − 卡宽；y = dock 顶 + 圆心 − 卡高/2），两个窗口的相对位置就是真机上的样子"""
+    fr = next(f for f in pg.frames if f.name == frame_name)
+    # 飞出窗渲染层就绪（订阅了飞窗目标）。写成 typeof 判断：wait_for_function 拿函数值当结果时
+    # 序列化不了，会被当成「还没好」一直等到超时
+    fr.wait_for_function("typeof window.__fxCb === 'function'")
+    fr.evaluate("s => { window.__state = s; window.__cb(s); }", cfg)
+    fr.evaluate("t => window.__fxCb(t)", target)
+    fr.wait_for_function("window.__flyoutSize")
+    fr.wait_for_timeout(300)
+    sz = fr.evaluate("window.__flyoutSize")
+    fr.evaluate("""([sz, x, y]) => {
+        const el = parent.document.querySelector(`iframe[name="${window.name}"]`);
+        el.style.width = sz.w + 'px';
+        el.style.height = sz.h + 'px';
+        el.style.left = x + 'px';
+        el.style.top = y + 'px';
+      }""", [sz, dock_left - 8 - sz["w"], dock_top + dock_cy - sz["h"] / 2])
+    pg.wait_for_timeout(250)
+    return sz
 
 
 INIT = """
@@ -183,6 +208,9 @@ window.glm = {
   accRemove: async () => window.__state, accActivate: async () => window.__state, accMenu: async () => window.__state,
   capsuleSize: (s) => { window.__capSize = s; },   // 实测尺寸：舞台按它调 iframe 大小
   dockSize: (s) => { window.__dockSize = s; },     // 同上（贴边列）
+  flyoutSize: (s) => { window.__flyoutSize = s; }, // 同上（飞出卡片：窗口 = 卡片 + 2×12）
+  dockHover: () => {}, flyoutHover: () => {},      // 截图不需要主进程回话，只记目标就够了
+  onFlyoutTarget: (cb) => { window.__fxCb = cb; },
   setView: () => {}, setTab: () => {}, setZoom: () => {}, dragStart: () => {}, dragMove: () => {},
   dragEnd: () => {}, ctxMenu: () => {}, trayIcon: () => {}, openExternal: () => {}, quit: () => {},
   onState: (cb) => { window.__cb = cb; }, ready: () => {},
@@ -217,15 +245,16 @@ STAGE_HTML = """<!doctype html><meta charset="utf-8">
 
 def build_stage(frames, w, h, bg="dark"):
     html = "".join(
-        f'<iframe name="{n}" src="/renderer/index.html" style="left:{x}px;top:{y}px;width:{fw}px;height:{fh}px"></iframe>'
-        for n, x, y, fw, fh in frames)
+        f'<iframe name="{n}" src="{src}" style="left:{x}px;top:{y}px;width:{fw}px;height:{fh}px"></iframe>'
+        for n, x, y, fw, fh, src in frames)
     STAGE.write_text(STAGE_HTML % {"w": w, "h": h, "frames": html, "bg": BG[bg]}, encoding="utf-8")
 
 
 def setup(ctx):
     html = re.sub(r'<meta http-equiv="Content-Security-Policy"[^>]*>', "",
                   (ROOT / "renderer" / "index.html").read_text(encoding="utf-8"))
-    ctx.route("**/renderer/index.html", lambda r: r.fulfill(body=html, content_type="text/html; charset=utf-8"))
+    # 正则匹配：?flyout=1 的飞出窗 iframe 也走同一份去 CSP 的 HTML
+    ctx.route(re.compile(r"/renderer/index\.html"), lambda r: r.fulfill(body=html, content_type="text/html; charset=utf-8"))
     ctx.add_init_script(INIT)
 
 
@@ -243,7 +272,7 @@ def main():
             b = p.chromium.launch()
 
             # ① 主图：胶囊 + GLM 面板 + DeepSeek 面板（深色）
-            build_stage([("cap", 60, 62, 240, 64), ("glm", 60, 176, 350, PH), ("ds", 440, 176, 350, PH)], 850, 560)
+            build_stage([("cap", 60, 62, 240, 64, IDX), ("glm", 60, 176, 350, PH, IDX), ("ds", 440, 176, 350, PH, IDX)], 850, 560)
             ctx = b.new_context(viewport={"width": 850, "height": 560}, device_scale_factor=2)
             setup(ctx)
             pg = ctx.new_page()
@@ -258,7 +287,7 @@ def main():
 
             # ①b 多账户两种布局（README「多账户」一节）：切换（点账户标签）+ 平铺（一眼看全）
             CW, TW = 400, 760
-            build_stage([("sw", 30, 46, CW, 64), ("tile", 30, 168, TW, 72)], 820, 268)
+            build_stage([("sw", 30, 46, CW, 64, IDX), ("tile", 30, 168, TW, 72, IDX)], 820, 268)
             ctx = b.new_context(viewport={"width": 820, "height": 268}, device_scale_factor=2)
             setup(ctx)
             pg = ctx.new_page()
@@ -272,7 +301,7 @@ def main():
             ctx.close()
 
             # ② 浅色主题（自适应背景明暗）
-            build_stage([("ds", 60, 60, 350, PH)], 470, PH + 120, bg="light")
+            build_stage([("ds", 60, 60, 350, PH, IDX)], 470, PH + 120, bg="light")
             ctx = b.new_context(viewport={"width": 470, "height": PH + 120}, device_scale_factor=2)
             setup(ctx)
             pg = ctx.new_page()
@@ -283,7 +312,7 @@ def main():
             ctx.close()
 
             # ③ 设置页（窗口高，1x 即可）
-            build_stage([("set", 40, 40, 416, 736)], 496, 816)
+            build_stage([("set", 40, 40, 416, 736, IDX)], 496, 816)
             ctx = b.new_context(viewport={"width": 496, "height": 816}, device_scale_factor=1.5)
             setup(ctx)
             pg = ctx.new_page()
@@ -303,7 +332,7 @@ def main():
             DW, DH = 300, 300
             for tag, theme, side in (("dock-dark-right", "dark", "right"),
                                      ("dock-light-left", "light", "left")):
-                build_stage([("dock", 0, 0, 90, 200)], DW, DH, bg="desk-" + theme)
+                build_stage([("dock", 0, 0, 90, 200, IDX)], DW, DH, bg="desk-" + theme)
                 ctx = b.new_context(viewport={"width": DW, "height": DH}, device_scale_factor=2)
                 setup(ctx)
                 pg = ctx.new_page()
@@ -313,6 +342,31 @@ def main():
                 fit_dock(pg, "dock", DW, DH, side)
                 pg.screenshot(path=str(OUT / f"{tag}.png"))
                 ctx.close()
+
+            # ④b 悬停详情（飞出卡片）：dock 贴右 + 悬停第一个圆圈时的卡片。
+            #     两个窗口（dock / 飞出窗）按**真实相对位置**拼在一张假桌面上：
+            #     x = dock 左边 − 8 − 卡宽；y = dock 顶 + 圆心 − 卡高/2（与主进程 flyoutBounds 同一套算法）
+            FW, FH = 560, 460
+            build_stage([("dock", 0, 0, 120, 260, IDX),
+                         ("fly", 0, 0, 350, 300, "/renderer/index.html?flyout=1")], FW, FH, bg="desk-dark")
+            ctx = b.new_context(viewport={"width": FW, "height": FH}, device_scale_factor=2)
+            setup(ctx)
+            pg = ctx.new_page()
+            pg.goto(f"http://127.0.0.1:{port}/_shots_stage.html")
+            pg.wait_for_timeout(700)
+            dst = dock_state("dark", "right")
+            put(pg, "dock", dst)
+            dock_sz = fit_dock(pg, "dock", FW, FH, "right")
+            dock_left = FW - dock_sz["w"]                       # 贴右：窗口右边贴舞台右缘
+            dock_top = (FH - dock_sz["h"]) / 2                  # fit_dock 把它纵向居中
+            dock_fr = next(f for f in pg.frames if f.name == "dock")
+            cy = dock_fr.evaluate("""() => {                    // 第一个圆圈的圆心（相对 dock 窗口顶部）
+                const r = document.querySelector('#dock .dc .dc-top').getBoundingClientRect();
+                return r.top + r.height / 2; }""")
+            place_flyout(pg, "fly", dst, {"pid": "glm", "accId": "a1", "side": "right"},
+                         dock_left, dock_top, cy)
+            pg.screenshot(path=str(OUT / "dock-flyout.png"))
+            ctx.close()
             b.close()
     finally:
         srv.shutdown()
