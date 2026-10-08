@@ -166,6 +166,13 @@ ok('显示器列表为空 → null', () => {
   assert.strictEqual(dock.snapSide(rect(0, 0), []), null);
 });
 
+console.log('\n[零相交兜底] 窗口完全脱离所有屏：displayFor 仍选最近的屏，snapSide 不再跟着吸');
+ok('唯一屏在 1920..3840，窗口 x = 0..192 与它零相交 → displayFor 兜底 #2，snapSide 返回 null', () => {
+  const RX = mkDisp(2, 1920, 0, 1920, 1080, { x: 1920, y: 0, width: 1920, height: 1040 });
+  assert.strictEqual(dock.displayFor(rect(0, 200), [RX]).id, 2);
+  assert.strictEqual(dock.snapSide(rect(0, 200), [RX]), null);
+});
+
 console.log('\n[dockRect] y 夹进工作区，宽高原样');
 const WA = { x: 0, y: 0, width: 1920, height: 1040 };
 ok('y = 200 → 原样保留，宽高不变', () => {
@@ -183,6 +190,12 @@ ok('y = 5000（越下界）→ 夹到 1040-68 = 972', () => {
 ok('尺寸不等于胶囊（60×300）→ 宽高原样，x / 夹取按该尺寸算', () => {
   assert.deepStrictEqual(dock.dockRect({ side: 'right', y: 5000, size: { w: 60, h: 300 }, workArea: WA }),
     { x: 1860, y: 740, width: 60, height: 300 });
+});
+ok('尺寸高过工作区（64×2000 > 1040）→ 顶对齐 y = 0、不冒出上界，x 仍贴边、宽高原样', () => {
+  assert.deepStrictEqual(dock.dockRect({ side: 'left', y: 0, size: { w: 64, h: 2000 }, workArea: WA }),
+    { x: 0, y: 0, width: 64, height: 2000 });
+  assert.deepStrictEqual(dock.dockRect({ side: 'right', y: 500, size: { w: 64, h: 2000 }, workArea: WA }),
+    { x: 1856, y: 0, width: 64, height: 2000 });
 });
 ok('工作区不在原点（副屏负坐标 + 顶部任务栏）→ 按工作区原点算', () => {
   const wa = { x: -1280, y: -40, width: 1280, height: 1024 };
