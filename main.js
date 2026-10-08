@@ -10,6 +10,8 @@ const providers = require('./lib/providers');
 const dsHistoryLib = require('./lib/ds-history');
 const { levelName, fmtResetTime, fmtMoney, normWarn } = require('./lib/format');
 const drag = require('./lib/drag');
+const dockGeo = require('./lib/dock');           // 贴边吸附几何（松手判定 / 落点）
+const dockMetric = require('./lib/dock-metric'); // 圆圈百分比口径（每个账户可配）
 
 const OVERVIEW_URL = 'https://www.bigmodel.cn/coding-plan/personal/overview';
 const IS_DEV = !app.isPackaged;
@@ -57,10 +59,11 @@ const DEFAULTS = {
   alwaysOnTop: true,
   zoom: 1,             // 展开态缩放（0.8–1.6，Ctrl+滚轮），胶囊不缩放
   theme: 'auto',       // auto=跟随背景明暗 | dark | light
-  view: 'capsule',      // capsule | panel | settings
+  view: 'capsule',      // capsule | dock | panel | settings（dock = 贴边收起态）
   panelTab: 'glm',      // 展开面板当前 provider 页签（值 = provider id）
   capsuleLayout: 'switch', // switch=每家只显示当前账户（点账户标签切换）| all=每个账户各占一格
   pos: null,            // {x,y} 胶囊左上角
+  dock: null,           // {side:'left'|'right', x, y} 贴边位置；非 null 就表示收起态是贴边
   snapshot: {},         // { [accountId]: 最近一次成功 data }（重启秒显）
   dsRange: '7d',        // DeepSeek 面板图表区间：1h | 24h | 7d | 30d
   dsPollMin: 2,         // 余额高频采样间隔（分钟，0=关闭）：实时读数的分辨率就是它
@@ -73,8 +76,18 @@ const CONFIG_PATH = () => path.join(app.getPath('userData'), 'config.json');
 const MIGRATE_GLM_ID = 'glm0';
 const MIGRATE_DS_ID = 'ds0';
 
+/** 贴边位置：只有 side 合法且 x / y 是有限数才算数（Number(null)===0 会把「没坐标」当成 0） */
+function normDock(v) {
+  if (!v || typeof v !== 'object') return null;
+  if (v.side !== 'left' && v.side !== 'right') return null;
+  if (typeof v.x !== 'number' || !Number.isFinite(v.x)) return null;
+  if (typeof v.y !== 'number' || !Number.isFinite(v.y)) return null;
+  return { side: v.side, x: v.x, y: v.y };
+}
+
 function mkAccount(provider, id, name, credentials) {
-  return { id, provider, name, enabled: true, credentials, alertState: {} };
+  // dock：这个账户在贴边圆圈里显示哪个百分比（默认口径，用户可在设置里改）
+  return { id, provider, name, enabled: true, credentials, alertState: {}, dock: dockMetric.normalize(provider, null) };
 }
 
 function loadConfig() {
@@ -111,10 +124,15 @@ function loadConfig() {
     }
     for (const k of ['token', 'dsToken', 'dsPlatformToken', 'lastData', 'lastDs', 'lastNotifiedWindowStart', 'lastNotifiedWeekStart']) delete raw[k];
     config = { ...DEFAULTS, ...raw };
+    // 贴边位置兜底：坏值一律清掉（一个「贴到屏幕外」的坐标比没有贴边更糟）；
+    // 视图还留在 dock 但位置没了 → 回胶囊，否则窗口没有落点
+    config.dock = normDock(config.dock);
+    if (config.view === 'dock' && !config.dock) config.view = 'capsule';
     // 账户结构兜底：缺字段补齐，未知 provider 剔除（实现被裁掉的升级场景）
     config.accounts = (config.accounts || []).filter((a) => a && providers.byId(a.provider)).map((a) => ({
       id: String(a.id || ''), provider: a.provider, name: String(a.name || ''), enabled: a.enabled !== false,
       credentials: a.credentials || {}, alertState: a.alertState || {},
+      dock: dockMetric.normalize(a.provider, a.dock),   // 圆圈口径：认不出的回默认，不能丢
     }));
     // active 指向失效/缺失时回填第一个启用的账户（迁移后必为空 → 这里一次性补齐）
     for (const p of providers.list) {
@@ -198,10 +216,15 @@ const PAD = 12;
 const CAP_SEP = 10;
 const CAP_MIN = 150;
 const CAPSULE_H = 40;
+// 贴边（dock）：一列圆圈，每个启用账户一个
+const DOCK_W = 64;            // 兜底宽（渲染层实测优先）
+const DOCK_ROW_H = 62;        // 每个圆圈占的高度（含间距）
+const DOCK_H_PAD = 40;        // 上下反向圆角延伸区
 // 胶囊真实尺寸由渲染层实测上报（见 capsule:size）：meta 里的 capsuleW / CAPSULE_H 只用于
 // 「首帧还没测出来」的兜底。写死的宽度会被内容撑破（多账户、余额位数变化、账户名长短），
 // 所以窗口尺寸一律以实测为准 —— 渲染层画多大，窗口就多大。
 let capsuleBox = null;        // { w, h } 内容盒尺寸（CSS px，不含 PAD）
+let dockBox = null;           // { w, h } dock 内容尺寸（CSS px）——注意 dock **不含 PAD**
 let panelBoxH = 0;            // 面板实测内容高度（CSS px）：两页签取高者，切页签不跳
 let boxDirty = false;         // 拖拽期间收到的尺寸变化：松手后再补一次重排
 // 面板：账户 chips 行只有在「某家配了多个账户」时才出现（行高恒定，切页签窗口零位移）
@@ -231,6 +254,12 @@ function winSize(view) {
       : CAP_MIN;
     return { w: w + PAD * 2, h: CAPSULE_H + PAD * 2 };
   }
+  if (view === 'dock') {
+    // 窗口就是内容本身，**不加 PAD**：贴边那一侧要严丝合缝贴着屏幕，多 12 DIP 会露出一条缝
+    if (dockBox && dockBox.w > 0) return { w: dockBox.w, h: dockBox.h };
+    const n = Math.max(1, config.accounts.filter((a) => a.enabled !== false).length);
+    return { w: DOCK_W, h: n * DOCK_ROW_H + DOCK_H_PAD };
+  }
   if (view === 'panel') {
     const s = SIZES.panel;
     // 实测优先（渲染层按两个页签里高的那个报）：换字体/换系统时行高会差几像素，
@@ -255,6 +284,19 @@ function setCapsuleBox(sz) {
   // 拖拽中不动尺寸：此时改窗口会和拖拽那套「尺寸钉死」的定位打架，松手后再对齐
   if (dragging) { boxDirty = true; return; }
   applyView('capsule');
+}
+
+/** 渲染层实测的 dock 内容尺寸（CSS px）：规则同胶囊（丢离谱值 / 没变不重排 / 拖拽中延后） */
+function setDockBox(sz) {
+  const w = Math.round(Number(sz && sz.w) || 0);
+  const h = Math.round(Number(sz && sz.h) || 0);
+  // 上限比胶囊宽得多：dock 是一列圆圈，账户多了会很高，400 是胶囊的量级
+  if (!(w > 0) || !(h > 0) || w > 4000 || h > 4000) return;
+  if (dockBox && dockBox.w === w && dockBox.h === h) return;
+  dockBox = { w, h };
+  if (config.view !== 'dock') return;   // 不在贴边视图时不重排：尺寸先记下，进 dock 时直接用
+  if (dragging) { boxDirty = true; return; }
+  applyView('dock');
 }
 
 /** 渲染层实测的面板内容高度（两页签取高者）：同上，只在真的变了才重排 */
@@ -283,6 +325,15 @@ function waUnion() {
     x2 = Math.max(x2, w.x + w.width); y2 = Math.max(y2, w.y + w.height);
   }
   return { x: x1, y: y1, width: x2 - x1, height: y2 - y1 };
+}
+
+/** 贴边窗口的落点：按 config.dock 找它所在的屏（拔屏 / 换布局后自然落到最近的那块），
+ *  再贴到那块屏同侧的工作区边、y 夹进工作区。尺寸由调用方给（dock 与面板 / 设置不一样）。 */
+function dockBounds(size) {
+  const d = config.dock;
+  const disp = dockGeo.displayFor({ x: d.x, y: d.y, width: size.w, height: size.h }, screen.getAllDisplays());
+  const wa = disp ? disp.workArea : workArea();
+  return dockGeo.dockRect({ side: d.side, y: d.y, size, workArea: wa });
 }
 
 function defaultPos() {
@@ -323,10 +374,11 @@ function repaint() {
 }
 
 function applyView(view, forceDefaultPos) {
+  if (view === 'dock' && !config.dock) view = 'capsule';   // 没有贴边位置就没有 dock 可言（别让窗口只剩个坏视图）
   const prevView = config.view;   // 必须在赋值前抓：判断这次是「换视图」还是「胶囊自身长胖了」
   config.view = view;
-  // 展开态按 zoom 等比缩放（内容 setZoomFactor + 窗口尺寸同步乘 zoom）；胶囊保持原始大小
-  const factor = view === 'capsule' ? 1 : (config.zoom || 1);
+  // 展开态按 zoom 等比缩放（内容 setZoomFactor + 窗口尺寸同步乘 zoom）；胶囊与 dock 保持原始大小
+  const factor = (view === 'capsule' || view === 'dock') ? 1 : (config.zoom || 1);
   try { win.webContents.setZoomFactor(factor); } catch { }
   const base = winSize(view);
   const s = { w: Math.round(base.w * factor), h: Math.round(base.h * factor) };
@@ -355,6 +407,17 @@ function applyView(view, forceDefaultPos) {
       config.pos = { x: b.x, y: b.y };
       saveConfig();
     }
+  } else if (view === 'dock') {
+    b = dockBounds(s);
+    // 校正过的坐标写回（与胶囊处理 config.pos 同理）：拔屏 / 缩放变化后 config.dock 里的
+    // x / y 会过时，落盘才能让下次启动直接贴对地方，而不是先贴错再回正
+    if (config.dock.x !== b.x || config.dock.y !== b.y) {
+      config.dock = { side: config.dock.side, x: b.x, y: b.y };
+      saveConfig();
+    }
+  } else if (config.dock) {
+    // 贴边时展开面板 / 设置：贴左 → 左边贴工作区左边，贴右 → 右边贴工作区右边；y 跟着 dock 走
+    b = dockBounds(s);
   } else {
     // 与胶囊同一左上角、向右下生长：窗口原点不跳变，越界才收回工作区内
     const wa = waFor({ x: cp.x, y: cp.y, width: s.w, height: s.h });
@@ -380,10 +443,15 @@ function applyView(view, forceDefaultPos) {
 
 function setView(view) {
   if (!win) return;
+  // 「收起态」由 config.dock 决定：贴边时收起回到 dock，而不是弹回胶囊记忆里的位置
+  // （渲染层现有的收起代码一律发 'capsule'）
+  if (view === 'capsule' && config.dock) view = 'dock';
   applyView(view);
 }
 
-/** 自检：把窗口收回工作区、重采样主题，并把真实几何与显示器布局落进日志 */
+/** 自检：把窗口收回工作区、重采样主题，并把真实几何与显示器布局落进日志。
+ *  注意 applyView(config.view)：贴边时视图就是 'dock'，落点每次重算 → 拔屏 / 换分辨率后
+ *  窗口会自然贴到「那块屏不在了之后」离它最近的一块屏的同侧边，不会停在看不见的地方。 */
 function revalidateWindow() {
   if (!win || win.isDestroyed()) return;
   applyView(config.view);
@@ -395,10 +463,26 @@ function revalidateWindow() {
 function recallWindow() {
   if (!win) return;
   config.pos = null;              // 丢掉可能已经失效的位置记忆 → 回到 defaultPos（主屏右上角）
+  config.dock = null;             // 贴边记忆同理：找回的是胶囊，不是一条可能已经不存在的边
   saveConfig();
   win.showInactive();             // 顺带从最小化/隐藏里恢复（不抢焦点）
-  applyView(config.view, true);   // 强制按默认位置重排，不锚定可能已经跑偏的窗口
+  applyView('capsule', true);     // 视图回胶囊，并强制按默认位置重排，不锚定可能已经跑偏的窗口
   log('找回窗口 →', winState(), '· 显示器:', dumpDisplays());
+}
+
+/** 取消贴边（右键菜单）：胶囊落到那条边内侧 20 DIP，y 不变 */
+function undock() {
+  if (!config.dock || !win || win.isDestroyed()) return;
+  const s = winSize('capsule');
+  const r = dockBounds(s);        // 贴边那一侧的落点；r.x 就是贴住边时的胶囊 x
+  config.pos = {
+    x: config.dock.side === 'right' ? r.x - 20 : r.x + 20,
+    y: r.y,                       // 「y 不变」：dock 的 y（已被夹进工作区）
+  };
+  config.dock = null;
+  saveConfig();
+  applyView('capsule');
+  log('取消贴边 →', winState());
 }
 
 /* 置顶自愈：样式操作/拖拽/其他置顶窗口都可能把本窗挤出置顶带，
@@ -557,6 +641,7 @@ function buildState() {
         const r = rtOf(a);
         return {
           id: a.id, name: a.name, enabled: a.enabled !== false,
+          dock: dockMetric.normalize(a.provider, a.dock),   // 圆圈显示哪个百分比（渲染层画弧长用）
           status: r.status, msg: r.msg, lastFetchAt: r.lastFetchAt, data: r.data,
           tier: tierOfAccount(p, r),   // 账户自己的水位（胶囊平铺时各格独立变色）
         };
@@ -581,6 +666,7 @@ function buildState() {
       zoom: config.zoom || 1,
       theme: config.theme,
       panelTab: panelTabResolved(),
+      dockSide: config.dock ? config.dock.side : null,   // 贴边贴在哪一侧（没贴边 → null）
       capsuleLayout: config.capsuleLayout === 'all' ? 'all' : 'switch',
       dsRange: ['1h', '24h', '7d', '30d'].includes(config.dsRange) ? config.dsRange : '7d',
       dsPollMin: Number(config.dsPollMin) || 0,
@@ -590,6 +676,7 @@ function buildState() {
       accounts: config.accounts.map((a) => ({
         id: a.id, provider: a.provider, name: a.name, enabled: a.enabled !== false,
         creds: credsView(a),
+        dock: dockMetric.normalize(a.provider, a.dock),   // 设置页里每个账户的圆圈口径
       })),
     },
   };
@@ -840,9 +927,12 @@ function updateTray() {
   }
 }
 
+/** 收起态 = 胶囊或贴边（贴边时窗口只剩一列圆圈）；托盘上「展开 / 收起」两处按它判方向 */
+const collapsed = () => config.view === 'capsule' || config.view === 'dock';
+
 function buildTrayMenu() {
   return Menu.buildFromTemplate([
-    { label: config.view === 'capsule' ? '展开面板' : '收起为胶囊', click: () => setView(config.view === 'capsule' ? 'panel' : 'capsule') },
+    { label: collapsed() ? '展开面板' : '收起为胶囊', click: () => setView(collapsed() ? 'panel' : 'capsule') },
     { label: '设置', click: () => setView('settings') },
     { label: '立即刷新', click: () => refresh(true) },
     { label: '找回窗口', click: recallWindow },   // 拔插屏/唤醒把胶囊搞丢时的自救，不必重启
@@ -861,7 +951,7 @@ function buildTrayMenu() {
 function createTray() {
   tray = new Tray(nativeImage.createFromPath(ASSET('tray.png')));
   tray.setContextMenu(buildTrayMenu());
-  tray.on('click', () => setView(config.view === 'capsule' ? 'panel' : 'capsule'));
+  tray.on('click', () => setView(collapsed() ? 'panel' : 'capsule'));
   updateTray();
 }
 
@@ -1040,6 +1130,18 @@ function accActivate({ provider, id }) {
   return { ok: true };
 }
 
+/** 保存单个账户的圆圈口径（贴边时该圆圈显示哪个百分比）。落到账户上：胶囊 / 面板 / 设置
+ *  都以 config.accounts 为唯一真相，口径跟着账户走，不另开一份。 */
+function accDock({ id, metric, budget }) {
+  const acc = getAcc(id);
+  if (!acc) return { err: '账户不存在' };
+  acc.dock = dockMetric.normalize(acc.provider, { metric, budget });
+  saveConfig();
+  broadcast();
+  log('账户口径 ·', acc.provider, acc.id, acc.dock.metric, acc.dock.budget == null ? '' : acc.dock.budget);
+  return { ok: true };
+}
+
 /**
  * 胶囊上的账户切换菜单。
  * 走系统原生菜单而不是自绘弹层：胶囊窗口只有 40px 高，自绘菜单要么把窗口撑大、要么被
@@ -1086,8 +1188,8 @@ function afterAccountsChanged() {
     }
   }
   saveConfig();
-  if (win && !win.isDestroyed() && (config.view === 'capsule' || config.view === 'panel')) {
-    applyView(config.view);   // 胶囊列数 / 面板 chips 行可能变了
+  if (win && !win.isDestroyed() && (config.view === 'capsule' || config.view === 'panel' || config.view === 'dock')) {
+    applyView(config.view);   // 胶囊列数 / 面板 chips 行 / 贴边列的圆圈数可能变了
   }
   broadcast();
   schedule();
@@ -1151,14 +1253,19 @@ function createWindow() {
 
 function popupWindowMenu() {
   menuOpen = true;
-  Menu.buildFromTemplate([
+  const tpl = [
     { label: '设置', click: () => setView('settings') },
+  ];
+  // 贴边时多一条不靠拖拽的退路：想回胶囊，不必赌「拖到哪儿才不算贴边」
+  if (config.dock) tpl.push({ label: '取消贴边', click: undock });
+  tpl.push(
     { label: '立即刷新', click: () => refresh(true) },
     { label: '打开日志文件夹', click: () => shell.openPath(app.getPath('userData')) },
     { label: '打开官网', click: () => shell.openExternal(OVERVIEW_URL) },
     { type: 'separator' },
     { label: '退出', click: () => app.quit() },
-  ]).popup({ callback: () => { menuOpen = false; } });
+  );
+  Menu.buildFromTemplate(tpl).popup({ callback: () => { menuOpen = false; } });
 }
 
 /* ---------------- IPC ---------------- */
@@ -1191,7 +1298,7 @@ function bindIpc() {
 
   ipcMain.on('view:set', (_e, v) => {
     log('ipc view:set', v);
-    setView(['capsule', 'panel', 'settings'].includes(v) ? v : 'capsule');
+    setView(['capsule', 'dock', 'panel', 'settings'].includes(v) ? v : 'capsule');
     setTimeout(applyTheme, 150); // 截屏采样移出展开/收起的关键路径
   });
   // 面板 provider 页签：窗口高度可能与 chips 行有关，切完要重算尺寸
@@ -1217,6 +1324,7 @@ function bindIpc() {
   ipcMain.handle('acc:update', (_e, payload) => { const r = accUpdate(payload || {}); return r.err ? r : buildState(); });
   ipcMain.handle('acc:remove', (_e, payload) => { const r = accRemove(payload || {}); return r.err ? r : buildState(); });
   ipcMain.handle('acc:activate', (_e, payload) => { const r = accActivate(payload || {}); return r.err ? r : buildState(); });
+  ipcMain.handle('acc:dock', (_e, payload) => { const r = accDock(payload || {}); return r.err ? r : buildState(); });
   ipcMain.handle('acc:menu', (_e, payload) => accMenu(payload || {}));
   /* ---------- 拖拽：主进程独占光标坐标系（详见 lib/drag.js 顶部注释） ---------- */
   const DRAG_MS = 8;             // 采样节拍：约一帧一次，足够跟手又不至于刷爆 IPC/SetWindowPos
@@ -1264,9 +1372,29 @@ function bindIpc() {
     dragging = false;
     clearInterval(timer0);
     if (!wasMoving || !win || win.isDestroyed()) return;   // 点击：位置没变，不必写盘
-    config.pos = { x: win.getPosition()[0], y: win.getPosition()[1] };
-    saveConfig();
-    if (dirty && (config.view === 'capsule' || config.view === 'panel')) applyView(config.view);   // 松手后补上尺寸对齐
+    // 松手时判定一次贴边（只在胶囊 / dock 上；面板、设置拖到哪儿就是哪儿）：
+    // 判定用窗口当前矩形 —— 屏幕外缘按 workArea 算，两屏之间的接缝不算边缘（见 lib/dock.js）
+    const view0 = config.view;
+    const b0 = win.getBounds();
+    const hit = (view0 === 'capsule' || view0 === 'dock') ? dockGeo.snapSide(b0, screen.getAllDisplays()) : null;
+    if (hit) {
+      config.dock = { side: hit.side, x: b0.x, y: b0.y };   // x 由 applyView 对齐到工作区边（拖到离边 28 DIP 以内也算贴）
+      saveConfig();
+      applyView('dock');
+    } else if (view0 === 'dock') {
+      config.dock = null;                                   // 拖离了屏幕外缘：退回胶囊，落在松手处
+      config.pos = { x: b0.x, y: b0.y };
+      saveConfig();
+      applyView('capsule');
+    } else {
+      config.pos = { x: b0.x, y: b0.y };
+      saveConfig();
+      // 松手后补上尺寸对齐（拖拽期间攒下的变化）。贴边状态下的面板 / 设置例外：
+      // 这次拖动就是用户意图（「拖到别处看」），而 applyView 会按 dockBounds 锚回贴边侧，
+      // 等于把这次拖动整个抹掉。尺寸推迟到下一次真正的布局对齐（切页签 / 又有了新的尺寸上报）再补。
+      if (dirty && !(config.dock && (view0 === 'panel' || view0 === 'settings'))
+          && (config.view === 'capsule' || config.view === 'panel')) applyView(config.view);
+    }
     assertTopmost();
     // 落定后再采样背景，避免拖拽尾顿（desktopCapturer 截屏有开销）
     clearTimeout(themeDebounce);
@@ -1311,11 +1439,12 @@ function bindIpc() {
   });
   ipcMain.on('app:quit', () => app.quit());
   ipcMain.on('capsule:size', (_e, sz) => setCapsuleBox(sz));
+  ipcMain.on('dock:size', (_e, sz) => setDockBox(sz));
   ipcMain.on('panel:size', (_e, sz) => setPanelBoxH(sz && sz.h));
   ipcMain.on('renderer:ready', () => {
     rendererReady = true;
     log('renderer:ready ✓ · 静默出场不抢焦点');
-    applyView('capsule'); // 启动一律从胶囊开始
+    applyView(config.dock ? 'dock' : 'capsule'); // 收起态：上次是贴边就回贴边，否则胶囊
     win.showInactive();   // 挂件不抢焦点（登录自启时不会打断正在输入的窗口）
     applyTheme();
     refresh(true);
@@ -1394,7 +1523,7 @@ if (!gotLock) {
 app.on('before-quit', () => {
   if (win && !win.isDestroyed()) {
     config.pos = { x: win.getPosition()[0], y: win.getPosition()[1] };
-    config.view = 'capsule';
+    config.view = config.dock ? 'dock' : 'capsule';   // 收起态：贴边记忆在 config.dock 里
     saveConfig();
   }
 });

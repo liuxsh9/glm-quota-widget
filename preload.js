@@ -14,8 +14,10 @@ try {
     accRemove: (p) => ipcRenderer.invoke('acc:remove', p),
     accActivate: (p) => ipcRenderer.invoke('acc:activate', p),
     accMenu: (p) => ipcRenderer.invoke('acc:menu', p),   // 原生弹出菜单选账户，关闭后返回新状态
+    accDock: (p) => ipcRenderer.invoke('acc:dock', p),   // 保存某个账户的圆圈口径（百分比）
     // 胶囊实测尺寸上报：窗口尺寸以渲染层画出来的为准（宽度写死会被内容撑破）
     capsuleSize: (s) => ipcRenderer.send('capsule:size', s),
+    dockSize: (s) => ipcRenderer.send('dock:size', s),   // 贴边内容实测尺寸（dock 不含 PAD）
     panelSize: (s) => ipcRenderer.send('panel:size', s),
     setView: (v) => ipcRenderer.send('view:set', v),
     setTab: (t) => ipcRenderer.send('tab:set', t),
