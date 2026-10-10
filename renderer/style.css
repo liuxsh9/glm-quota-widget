@@ -128,7 +128,7 @@ body.no-providers #capsule { min-width: 126px; }   /* 空态提示别缩成一�
 #capsule .cap-acct { display: flex; flex-direction: column; justify-content: center; flex: none; }
 #capsule .cap-data { display: flex; align-items: center; }
 #capsule .cap-glm .cap-data { gap: 5px; }
-#capsule .cap-volc .cap-data { gap: 5px; }
+#capsule .cap-quota .cap-data { gap: 5px; }
 #capsule .cap-ds .cap-data { gap: 7px; }   /* 数据体与账户 chip 之间的呼吸 */
 #capsule .cap-ds .cap-main {
   display: flex; flex-direction: column; align-items: flex-end;
@@ -452,10 +452,10 @@ body.theme-light #panel .blk-note .overtxt, body.theme-light #flyout .blk-note .
 
 /* 火山脚注要放「套餐名 + 两种都订了/另一种查询失败」的提示，用 flex 排。
    这样 .overtxt 被 display:none 时既不占位、也不留下串场的分隔符。 */
-#panel .pane-volc .blk-note .notetxt, #flyout .pane-volc .blk-note .notetxt{ display: flex; align-items: center; gap: 6px; }
-#panel .pane-volc .blk-note .hint, #flyout .pane-volc .blk-note .hint{ color: #fdba74; cursor: help; }
-body.theme-light #panel .pane-volc .blk-note .hint, body.theme-light #flyout .pane-volc .blk-note .hint{ color: #b45309; }
-#panel .pane-volc .pts .rt, #flyout .pane-volc .pts .rt{ font-size: 10px; }
+#panel .pane-quota .blk-note .notetxt, #flyout .pane-quota .blk-note .notetxt{ display: flex; align-items: center; gap: 6px; }
+#panel .pane-quota .blk-note .hint, #flyout .pane-quota .blk-note .hint{ color: #fdba74; cursor: help; }
+body.theme-light #panel .pane-quota .blk-note .hint, body.theme-light #flyout .pane-quota .blk-note .hint{ color: #b45309; }
+#panel .pane-quota .pts .rt, #flyout .pane-quota .pts .rt{ font-size: 10px; }
 
 /* 胶囊 mini bar 版本：更细的斜纹与亮线 */
 #capsule .bar { position: relative; overflow: visible; }

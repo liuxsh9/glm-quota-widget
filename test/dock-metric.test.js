@@ -32,8 +32,8 @@ const close = (got, want, eps = 1e-9) => Math.abs(got - want) <= eps;
 
 /* ---------------- METRICS ---------------- */
 console.log('METRICS:');
-ok('三家都有列表，每项形如 { key, label, short }', () => {
-  assert.deepStrictEqual(Object.keys(M.METRICS).sort(), ['deepseek', 'glm', 'volc']);
+ok('四家都有列表，每项形如 { key, label, short }', () => {
+  assert.deepStrictEqual(Object.keys(M.METRICS).sort(), ['codex', 'deepseek', 'glm', 'volc']);
   for (const [id, list] of Object.entries(M.METRICS)) {
     assert.ok(Array.isArray(list) && list.length > 0, `${id} 列表为空`);
     for (const m of list) {
@@ -51,6 +51,14 @@ ok('口径集合与设计一致（GLM 5h/周/双环、火山多一个月、DS �
   assert.strictEqual(M.METRICS.glm[0].key, 'five');
   assert.strictEqual(M.METRICS.volc[0].key, 'five');
   assert.strictEqual(M.METRICS.deepseek[0].key, 'today');
+});
+ok('Codex：周排第一（改版后 Plus 只剩周窗口），也能选 5h + 周双环', () => {
+  assert.deepStrictEqual(M.METRICS.codex.map((m) => m.key), ['week', 'five', 'month', 'both']);
+  assert.deepStrictEqual(M.METRICS.codex[3].dual, ['five', 'week']);
+  assert.strictEqual(M.normalize('codex', {}).metric, 'week');
+  const data = { five: { known: false, percent: 0 }, week: { known: true, percent: 37 } };
+  assert.strictEqual(M.percentOf('codex', data, { metric: 'week' }).raw, 37);
+  assert.strictEqual(M.percentOf('codex', data, { metric: 'five' }), null);   // 没有 5h 窗口 → 灰环，不是 0%
 });
 
 /* ---------------- normalize ---------------- */

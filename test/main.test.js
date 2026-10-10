@@ -459,6 +459,19 @@ async function bootOnly(dir) {
   await call('acc:remove', { id: volcId });   // 还原现场：后面的「删光账户」用例要数得准
   await call('tab:set', 'glm');
 
+  console.log('\nCodex：跨字段校验（provider.validate）:');
+  // 「粘贴」来源却什么都没粘：字段各自都合法（令牌是选配），只有放在一起才不成立——由 provider 的 validate 拦
+  const cxBad = await call('acc:add', { provider: 'codex', name: 'Codex', credentials: { source: 'paste', accessToken: '' } });
+  t('粘贴来源没粘令牌 → 拒绝添加，并指出可以改成「读本机」', !!cxBad.err && /读本机/.test(cxBad.err), JSON.stringify(cxBad.err));
+  t('被拒时不落账户', !(await state()).config.accounts.some((a) => a.provider === 'codex'));
+  const cxLocal = await call('acc:add', { provider: 'codex', name: 'Codex', credentials: { source: 'local' } });
+  t('读本机来源可以不填令牌', !cxLocal.err && !!cxLocal.providers.codex, JSON.stringify(cxLocal.err));
+  const cxId = cxLocal.providers.codex.accounts[0].id;
+  const cxSwitch = await call('acc:update', { id: cxId, credentials: { source: 'paste' } });
+  t('改成粘贴来源但没给令牌 → 更新被拒，凭据原样保留', !!cxSwitch.err
+    && ((await state()).config.accounts.find((a) => a.id === cxId).creds.source || {}).value === 'local');
+  await call('acc:remove', { id: cxId });
+
   console.log('\n剪贴板识别（按 provider 声明）:');
   electronStub.clipboard.readText = () => `Cookie: bigmodel_token_production=${FAKE_GLM}; Bearer ${FAKE_DS}`;
   const peek = await call('clipboard:peek');

@@ -1046,6 +1046,13 @@ function updateTray() {
           lines.push(`${who}火山方舟${lv}`);
           const rst = r.data.five && r.data.five.nextResetTime;
           if (parts.length) lines.push(parts.join(' · ') + (rst ? ` · ${fmtResetTime(rst)} 重置` : ''));
+        } else if (p.id === 'codex') {
+          const lv = r.data.level ? ` ${levelName(r.data.level)}` : '';
+          const seg = (n, w) => (w && w.known ? `${n} ${w.percent}%` : null);
+          const parts = [seg('5小时', r.data.five), seg('周', r.data.week), seg('月', r.data.month)].filter(Boolean);
+          const first = ['five', 'week', 'month'].map((k) => r.data[k]).find((w) => w && w.known && w.nextResetTime);
+          lines.push(`${who}Codex${lv}${r.data.reached ? ' · 已达上限' : ''}`);
+          if (parts.length) lines.push(parts.join(' · ') + (first ? ` · ${fmtResetTime(first.nextResetTime)} 重置` : ''));
         } else {
           lines.push(`${who}${p.name}`);
         }
@@ -1202,8 +1209,10 @@ function accAdd({ provider, name, credentials }) {
   const creds = cleanCredentials(provider, credentials || {}, {});
   const unparsed = unparsedFields(p, credentials);
   const missing = p.credentials.filter((c) => c.required && !creds[c.key]).map((c) => c.label);
-  if (unparsed.length || missing.length) {
-    const err = credErr({ missing, unparsed });
+  // 字段之间的约束（必填与否取决于另一个字段，如 Codex「粘贴」来源要求必须粘了东西）由 provider 自己说
+  const invalid = !unparsed.length && !missing.length && typeof p.validate === 'function' ? p.validate(creds) : '';
+  if (unparsed.length || missing.length || invalid) {
+    const err = invalid || credErr({ missing, unparsed });
     log('账户添加被拒 ·', provider, err);
     return { err };
   }
@@ -1234,7 +1243,13 @@ function accUpdate({ id, name, enabled, credentials }) {
       log('账户更新被拒 ·', acc.provider, err);
       return { err };
     }
-    acc.credentials = cleanCredentials(acc.provider, credentials, acc.credentials);
+    const next = cleanCredentials(acc.provider, credentials, acc.credentials);
+    const invalid = p && typeof p.validate === 'function' ? p.validate(next) : '';
+    if (invalid) {
+      log('账户更新被拒 ·', acc.provider, invalid);
+      return { err: invalid };
+    }
+    acc.credentials = next;
   }
   const credsChanged = before !== JSON.stringify(acc.credentials);
   const reEnabled = acc.enabled && !wasEnabled;

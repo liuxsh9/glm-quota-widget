@@ -916,11 +916,11 @@ with sync_playwright() as p:
     push(pg, view="settings")
     pg.wait_for_function("document.body.className.includes('view-settings')")
     pg.set_viewport_size({"width": SETTINGS[0], "height": SETTINGS[1]})
-    t("设置页分五段（三家 provider + 通用 + 贴边圆圈）", pg.locator("#settings .sech").count() == 5)
+    t("设置页分六段（四家 provider + 通用 + 贴边圆圈）", pg.locator("#settings .sech").count() == 6)
     t("三行账户（主号/备用号/DeepSeek）", pg.locator("#settings .acc-row").count() == 3)
     t("账户行显示尾号", "0LD_OLD" in pg.text_content("#provSecs"))
     t("账户状态词=已失效", "已失效" in pg.text_content("#provSecs .acc-row[data-id='a1'] .aword"))
-    t("三个添加按钮", pg.locator("#settings .acc-add").count() == 3)
+    t("四个添加按钮", pg.locator("#settings .acc-add").count() == 4)
     t("GLM 专属控件在 GLM 段", pg.evaluate("""() => {
         const glmSec = document.querySelector('#provSecs .acc-wrap[data-pid=\\'glm\\']');
         return !!glmSec && !!glmSec.querySelector('#threshold') && !!glmSec.querySelector('#pacealert');
@@ -1588,8 +1588,69 @@ with sync_playwright() as p:
     t("面板页签也回到两个", pg.locator("#tabs .tab").count() == 2)
     t("页签里没有「火山」", pg.locator("#tabs .tab", has_text="火山").count() == 0)
 
+    # ---- OpenAI Codex：与火山共用配额型面板，但接口没给的窗口整块藏掉 ----
+    print("OpenAI Codex（第四家 provider）:")
+    pg.evaluate("""() => {
+      const s = window.__state, H = 3600e3, D = 86400e3, NOW = Date.now();
+      const none = (lenMs) => ({ known: false, percent: 0, used: null, total: null, remaining: null,
+        nextResetTime: null, windowStart: null, windowMs: lenMs });
+      s.view = 'capsule';
+      s.providers.codex = { name: 'OpenAI Codex（ChatGPT 套餐）', tab: 'Codex', tier: 'low',
+        accounts: [{ id: 'c1', name: 'Codex', enabled: true, status: 'ok', msg: '', lastFetchAt: NOW, tier: 'low',
+          data: { level: 'plus', source: 'paste', tokenExp: NOW + 5 * D + H, reached: false, extras: [], fetchedAt: NOW,
+                  five: none(5*H), month: none(30*D),
+                  week: { known: true, percent: 37, used: null, total: null, remaining: null,
+                          nextResetTime: NOW + 3 * D, windowStart: NOW - 4 * D, windowMs: 7 * D } } }],
+        activeId: 'c1' };
+      s.config.accounts.push({ id: 'c1', provider: 'codex', name: 'Codex', enabled: true,
+        creds: { source: { set: true, tail: 'paste', value: 'paste' }, accessToken: { set: true, tail: 'zzzzzz' } } });
+      s.config.active.codex = 'c1';
+      window.__cb(s);
+    }""")
+    pg.wait_for_timeout(200)
+    t("Codex 出一列胶囊", pg.locator("#capsule .cap-codex").count() == 1)
+    t("只有周窗口：胶囊只留「周」一行，5h 行与月数字藏掉", pg.evaluate("""() => {
+        const c = document.querySelector('#capsule .cap-codex');
+        const vis = (e) => !!e && getComputedStyle(e).display !== 'none';
+        return vis(c.querySelector('.pct-week').parentElement) && !vis(c.querySelector('.pct-five').parentElement)
+          && !vis(c.querySelector('.mnum'));
+      }""") is True)
+    t("周 37", pg.text_content("#capsule .cap-codex .pct-week") == "37")
+    pg.evaluate("() => { window.__state.config.panelTab = 'codex'; window.__state.view = 'panel'; window.__cb(window.__state); }")
+    pg.wait_for_timeout(250)
+    t("面板只显示周额度块（5h / 月藏掉）",
+      pg.locator("#panel .pane-codex .blk-q:not([hidden])").count() == 1
+      and pg.locator("#panel .pane-codex [data-win='week']:not([hidden])").count() == 1)
+    t("面板周额度 37", pg.text_content("#panel .pane-codex [data-win='week'] .pv") == "37")
+    t("脚注写着令牌还剩几天", "令牌 5 天后过期" in pg.text_content("#panel .pane-codex .notetxt"))
+    t("页签徽标是套餐名 Plus", "Plus" in pg.text_content("#tabs"))
+    pg.evaluate("() => { const a = window.__state.providers.codex.accounts[0]; a.data.tokenExp = Date.now() + 5 * 3600e3; window.__cb(window.__state); }")
+    pg.wait_for_timeout(150)
+    t("快过期：脚注变成警示", pg.locator("#panel .pane-codex .notetxt .hint", has_text="小时后过期").count() == 1)
+    pg.evaluate("() => { const a = window.__state.providers.codex.accounts[0]; a.data.source = 'local'; window.__cb(window.__state); }")
+    pg.wait_for_timeout(150)
+    t("读本机来源：不提过期（Codex CLI 自己续期）", "过期" not in pg.text_content("#panel .pane-codex .notetxt"))
+    pg.evaluate("() => { const a = window.__state.providers.codex.accounts[0]; a.status = 'expired'; a.data = null; window.__cb(window.__state); }")
+    pg.wait_for_timeout(150)
+    t("失效时三个块都在（不塌成一条脚注），数字是「–」",
+      pg.locator("#panel .pane-codex .blk-q:not([hidden])").count() == 3
+      and pg.text_content("#panel .pane-codex [data-win='week'] .pv") == "–")
+    pg.evaluate("() => { window.__state.view = 'capsule'; window.__cb(window.__state); }")
+    pg.wait_for_timeout(150)
+    t("失效：胶囊显示「凭据失效」", "凭据失效" in pg.text_content("#capsule .cap-codex .cap-warn"))
+    # 还原现场：后面的用例按「两家」数列数
+    pg.evaluate("""() => {
+      const s = window.__state;
+      s.config.accounts = s.config.accounts.filter(a => a.id !== 'c1');
+      delete s.providers.codex; delete s.config.active.codex;
+      s.config.panelTab = 'glm';
+      window.__cb(s);
+    }""")
+    pg.wait_for_timeout(150)
+    t("Codex 收掉后胶囊回到两列", pg.locator("#capsule .cap-grp").count() == 2)
+
     print("provider 元数据（GLMPROV）:")
-    t("三家注册且 id 正确", pg.evaluate("GLMPROV.list.map(p => p.id).join()") == "glm,deepseek,volc")
+    t("四家注册且 id 正确", pg.evaluate("GLMPROV.list.map(p => p.id).join()") == "glm,deepseek,volc,codex")
     t("凭据声明驱动设置页", pg.evaluate("GLMPROV.byId('deepseek').credentials.length") == 2)
     t("火山的套餐是下拉字段（带选项）", pg.evaluate("(() => { const c = GLMPROV.byId('volc').credentials.find(c => c.key === 'plan'); return c && c.kind === 'select' && c.options.length; })()") == 3)
     t("胶囊列宽已声明", pg.evaluate("GLMPROV.byId('glm').capsuleW") > 0)

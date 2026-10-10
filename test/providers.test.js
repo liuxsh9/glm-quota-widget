@@ -18,7 +18,7 @@ const res = (obj, status = 200) => ({ status, ok: status === 200, json: async ()
 
 /* ---------------- 注册表与元数据 ---------------- */
 console.log('注册表:');
-t('三家 provider 注册', providers.list.map((p) => p.id).join(',') === 'glm,deepseek,volc', j(providers.list.map((p) => p.id)));
+t('四家 provider 注册', providers.list.map((p) => p.id).join(',') === 'glm,deepseek,volc,codex', j(providers.list.map((p) => p.id)));
 for (const p of providers.list) {
   t(`${p.id} 元数据完整`, p.name && p.tab && p.capsuleW > 0 && Array.isArray(p.credentials)
     && p.credentials.length > 0 && Array.isArray(p.domains) && p.domains.length > 0);

@@ -36,10 +36,12 @@ jobs:
           node --check lib/deepseek.js
           node --check lib/ds-history.js
           node --check lib/volc.js
+          node --check lib/codex.js
           node --check lib/providers/meta.js
           node --check lib/providers/glm.js
           node --check lib/providers/deepseek.js
           node --check lib/providers/volc.js
+          node --check lib/providers/codex.js
           node --check lib/providers/quota-alerts.js
           node --check lib/providers/index.js
 
@@ -48,6 +50,7 @@ jobs:
       - name: Unit tests
         run: |
           npm run test:volc
+          npm run test:codex
           npm run test:providers
 
       # 钩子失败时会静默保留平铺 zip（发版不能挂），加上真要打 10 分钟包，

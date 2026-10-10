@@ -3,7 +3,7 @@
 [![Release](https://github.com/liuxsh9/glm-quota-widget/actions/workflows/release.yml/badge.svg)](https://github.com/liuxsh9/glm-quota-widget/actions/workflows/release.yml)
 [![Download](https://img.shields.io/github/v/release/liuxsh9/glm-quota-widget?label=%E4%B8%8B%E8%BD%BD)](https://github.com/liuxsh9/glm-quota-widget/releases/latest)
 
-悬挂在屏幕角落的一枚小胶囊：**GLM Coding Plan 的 5 小时 / 周额度**、**火山方舟 Coding / Agent Plan 的 5 小时 / 周 / 月额度**、**DeepSeek 的余额与消费**，扫一眼就够。点开是完整面板，每家云各自可挂**多个账户**。
+悬挂在屏幕角落的一枚小胶囊：**GLM Coding Plan 的 5 小时 / 周额度**、**火山方舟 Coding / Agent Plan 的 5 小时 / 周 / 月额度**、**OpenAI Codex（ChatGPT 套餐）的额度**、**DeepSeek 的余额与消费**，扫一眼就够。点开是完整面板，每家云各自可挂**多个账户**。
 
 <img src="docs/hero.png" alt="胶囊 + GLM 面板 + DeepSeek 面板" width="820">
 
@@ -14,7 +14,7 @@
 - **不用打开任何窗口**：胶囊上一眼看完各条配额进度 + 余额；可拖到任意位置、始终置顶
 - **预期进度**：进度条上的斜纹段 = 按时间均摊、此刻「应该」用掉的量。实际一旦超过它，超出那段直接标红、整体转琥珀提醒——账单还没到，也能提前知道自己花超了
 - **多账户**：同一家云挂几个号都行。「切换」模式只显示当前号、点标签弹菜单换人；「平铺」模式每个号各占一格，一眼看全
-- **面板**：GLM 给百分比 / 积分 / 重置倒计时；火山方舟给 5 小时 / 周 / 月三条窗口（Agent Plan 另有「已用 / 总量」次数）；DeepSeek 给余额、今日 / 近 7 天 / 本月消费、消费柱状图（1 小时按 5 分钟、24 小时按小时、7 / 30 天按天）、可用天数与 token 用量
+- **面板**：GLM 给百分比 / 积分 / 重置倒计时；火山方舟给 5 小时 / 周 / 月三条窗口（Agent Plan 另有「已用 / 总量」次数）；Codex 给接口返回的那几条窗口（Plus 目前只有周）；DeepSeek 给余额、今日 / 近 7 天 / 本月消费、消费柱状图（1 小时按 5 分钟、24 小时按小时、7 / 30 天按天）、可用天数与 token 用量
 - **贴边模式**：把挂件拖到屏幕左 / 右边缘松手 → 变成一列圆圈（每个启用账户一个），圆环颜色随百分比连续渐变；鼠标悬停圆圈弹出该账户的详情卡片；右键菜单有「取消贴边」
 - **不打扰**：余额默认打码（瞟一眼看不到价格）；深浅色背景自动换深色 / 浅色玻璃；无动画特效
 - **省心**：默认 10 分钟自动刷新（带 ±20s 随机抖动、429 自动退避），单实例，托盘常驻
@@ -47,6 +47,7 @@
    | DeepSeek 余额 | **API Key**（`sk-` 开头） | [platform.deepseek.com](https://platform.deepseek.com) → 「API Keys」 |
    | DeepSeek 精确账单（选配） | 平台 `userToken` | 同一站点 F12 → Application → Local Storage → `userToken` |
    | 火山方舟 | **IAM 子账号的 AK/SK** | [console.volcengine.com/iam/keymanage](https://console.volcengine.com/iam/keymanage) → 见下方「火山的权限怎么给」 |
+   | OpenAI Codex | Codex CLI 登录后的 **`~/.codex/auth.json`**（ChatGPT 账号登录） | Codex 登录在别的机器上：把那台的 auth.json 整份粘进来；登录在本机：「凭据来源」选「读本机」，什么都不用粘。见下方「OpenAI Codex」 |
 
    > **火山方舟这条特别注意：不要用主账号的 AK/SK。**
    > 它的用量接口只认火山签名（AK/SK），而 AK/SK 能签这个身份名下的**所有**管理接口——远不止查用量。
@@ -157,6 +158,16 @@ Authorization: <API Key 或 bigmodel_token_production 的 JWT>   # 注意没有 
 
 **两个接口都不给窗口开始时间**，只给下次重置时间，所以进度条上那条「预期进度」的斜纹段是由「重置时间 − 窗口长度」倒推的。网络错误、限流、权限不足时**不会**去试另一种套餐（那会把「查不到」误报成「没订阅」），只有明确返回「未订阅」才会回退。
 
+### OpenAI Codex（ChatGPT 订阅套餐的额度）
+
+数据来自 `GET https://chatgpt.com/backend-api/wham/usage`——Codex CLI 的 `/status` 和网页 Settings → Usage 用的就是它，只读、不调模型、不耗额度。**这是 ChatGPT 的内部接口**，没有公开文档，OpenAI 改版时可能短暂失灵。
+
+**凭据只用 `access_token`**（auth.json 里 `tokens.access_token`，整份粘进来会自动取它；`ChatGPT-Account-Id` 从这个 JWT 里读）。**刻意不用 `refresh_token` 续期**：它是一次性的，用一次就轮换——挂件在你的 PC 上拿复制来的 refresh_token 续期，会让服务器上 Codex 手里那份当场作废、被迫重新 `codex login`。代价是 access_token 约 **10 天**过期：面板脚注显示剩余天数，剩不到 2 天弹一次提醒；到时去那台机器上跑一次 `codex`（它会自己续期），再把 auth.json 粘过来。「读本机」来源每次拉取都重读文件，跟着本机 Codex CLI 的续期走，不用管过期。
+
+**窗口按长度认，不按位置认**：2026 年年中改版后 `primary_window` 从 5 小时变成了周、`secondary_window` 变成 null，免费号还见过 30 天窗口。接口给了哪几条就显示哪几条（Plus 目前只有周），没给的整块藏掉；按模型单列的额外限额（如 GPT-5.3-Codex-Spark）与代码审查额度写在面板脚注里。
+
+PC 上访问 chatgpt.com 要走代理的话不用另配：请求走 Electron 的网络栈，用的是系统代理设置。
+
 **胶囊上那格只有两行**：`5h` 和 `周` 带进度条，`月` 只给数字跟在「周」那一行后面——三条窗口排三行会把行距压扁，还会把整枚胶囊顶高（比 GLM / DeepSeek 那两格高出一截）。月额度涨得慢，条形给不出更多信息，数字够用；万一看得出「月超预期」，那个数字会变琥珀。要看完整的一条去面板。
 
 ### 峰谷时段（两家规则不同，均以北京时间 UTC+8 为准）
@@ -214,6 +225,7 @@ npm start               # 本地运行（F12 开 DevTools）
 npm run test:usage      # GLM 数据层（真实 token 走 GLM_TOKEN 或 /tmp/glm_token）
 npm run test:deepseek   # DeepSeek 数据层（真实联测走 DS_API_KEY）
 npm run test:volc       # 火山方舟签名与解析（签名对官方 Python SDK 的黄金向量）
+npm run test:codex      # OpenAI Codex：auth.json 提取 / 窗口归槽 / 过期提醒（全 mock，不连网）
 npm run test:providers  # provider 注册表与各家实现（全 mock，不连网）
 npm run test:main       # 主进程集成：桩掉 electron 真实加载 main.js，验迁移/CRUD/窗口尺寸联动
 npm run test:renderer   # 渲染层交互（需 python3 + playwright）
@@ -234,18 +246,19 @@ npm run dist:win        # 打包 Windows 安装版 + 便携版（Linux 上出安
 main.js               主进程：窗口 / 托盘 / 定时刷新 / 通知 / 配置 + 按账户的刷新与轮询编排
 preload.js            contextBridge 桥（含账户 CRUD）
 lib/providers/        ★ provider 注册表：meta.js（凭据声明 / 强调色 / 专栏兜底宽度，双端共用）
-                        + glm.js / deepseek.js / volc.js 实现 + quota-alerts.js（配额型共用提醒）
+                        + glm.js / deepseek.js / volc.js / codex.js 实现 + quota-alerts.js（配额型共用提醒）
                         + index.js
 lib/usage.js          GLM 配额请求与解析（纯 Node，可独立测试）
 lib/volc.js           火山方舟签名 V4 + 两种套餐的请求与归一化（纯 Node，可独立测试）
+lib/codex.js          OpenAI Codex 用量接口 + 本机 auth.json 读取 + 窗口按长度归槽（纯 Node）
 lib/deepseek.js       DeepSeek 余额 + 平台账单两条链路
-lib/tokens.js         三种凭据的提取规则（UMD，主进程与渲染层共用）
+lib/tokens.js         各家凭据的提取规则（UMD，主进程与渲染层共用）
 lib/ds-history.js     余额差值历史：样本抽稀、逐日 / 逐小时聚合、实时读数（按账户分桶）
 lib/format.js         万 / 千分位 / 倒计时 / 金额 / token 格式化（双端共用）
 lib/drag.js           拖拽几何（主进程独占光标坐标系）
 lib/dock.js           贴边吸附几何（松手判定 / 落点，纯函数）
 lib/dock-metric.js    圆圈口径与圆环配色（双端共用；OKLab 连续插值）
-renderer/logos.js     三家 provider 的内联 logo（LobeHub Icons，MIT）
+renderer/logos.js     各家 provider 的内联 logo（LobeHub Icons，MIT）
 renderer/             app.js 编排（贴边列的圆圈由它画）+ panes.js（各 provider 的胶囊列 / 面板视图）+ settings.js（账户管理）
 tools/                图标生成 / 截图脚本
 ```
@@ -254,7 +267,7 @@ tools/                图标生成 / 截图脚本
 
 > **没有「通用视图」兜底**：`window.PANES` 里缺了这一家，页签和设置页都在，但胶囊上不会出现这一列、面板里是空的。另外元数据与实现要**同一次落地**——渲染层读的是未经注册表过滤的元数据，只加 meta 会多出一个点了报「未知 provider」的「＋ 添加账户」按钮。
 
-现成的三家可以直接抄：`glm.js`（最简：百分比配额）、`volc.js`（AK/SK 签名 + 三个窗口 + 枚举型凭据字段）、`deepseek.js`（两条链路各自降级 + 余额高频采样）。
+现成的四家可以直接抄：`glm.js`（最简：百分比配额）、`volc.js`（AK/SK 签名 + 三个窗口 + 枚举型凭据字段）、`codex.js`（跨字段校验 `validate` + 读本机文件 / 粘贴两种来源）、`deepseek.js`（两条链路各自降级 + 余额高频采样）。
 
 **打包的两个收尾钩子**（`build/`）：`afterPack.js` 裁掉用不到的运行时组件（dxcompiler / dxil / elevate）；`afterArtifacts.js` 把 Windows 的 zip 重打成「解压一层 `GLM-Usage-Widget/` 文件夹」并改名 `-win64.zip`——electron-builder 26 的 zip 目标在 Windows 上写死了不套目录（`ArchiveTarget.js` 里的 `withoutDir = !isMac`），只能在产物出来后用自带的 7za 按同一套参数重打一遍。
 

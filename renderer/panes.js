@@ -526,26 +526,32 @@
     return g;
   }
 
-  /* ================= 火山方舟 =================
-     三个配额窗口（5h / 周 / 月），比 GLM 多一个月。
+  /* ================= 配额型：火山方舟 / OpenAI Codex =================
+     三个配额窗口（5h / 周 / 月），比 GLM 多一个月。两家共用同一套面板与胶囊格，差别见 makeQuotaPane。
      条形的宽度、幽灵段、亮线、超支段全部复用 GLM 那套 CSS：规则是按**元素类 + CSS 变量**写的
      （`i.f5` 取 `--p5`、`.ghost.g5` 取 `--pace5`……），所以只要在面板/格子根上摆好变量，
      5h 与周两个窗口零新增样式；只有「月」要补几条同样形状的规则。
 
      窗口描述表：一处写清三行各自的类名与变量名，免得把同一段逻辑抄三遍抄漏一处。 */
-  const VOLC_WINS = [
+  const QUOTA_WINS = [
     { slot: 'five', short: '5h', name: '5小时额度', fill: 'f5', ghost: 'g5', ovr: 'o5', edge: 'e5', css: 'p5', pace: 'pace5', over: 'over5' },
     { slot: 'week', short: '周', name: '周额度', fill: 'fw', ghost: 'gW', ovr: 'oW', edge: 'eW', css: 'pw', pace: 'paceW', over: 'overW' },
     { slot: 'month', short: '月', name: '月额度', fill: 'fm', ghost: 'gM', ovr: 'oM', edge: 'eM', css: 'pm', pace: 'paceM', over: 'overM' },
   ];
 
-  function makeVolcPane() {
-    // 火山这页比 GLM / DeepSeek 高一截（多一个「月」块）。pane-solo = 跳出面板的「页签取最高」：
+  /**
+   * 配额型面板（火山 / Codex 共用）：三个窗口块 + 脚注。两家的差别只有两处，由 opts 说清：
+   *   note(d)      脚注里的 provider 专属提示（返回 HTML 片段数组）
+   *   hideUnknown  接口没给的窗口整块藏掉（Codex：Plus 只有周窗口，摆一个永远「–」的 5h 块没意义）；
+   *                一个窗口都不知道时（失效 / 加载中）照常全显示，免得面板塌成一条脚注
+   */
+  function makeQuotaPane(pid, opts) {
+    // 这页比 GLM / DeepSeek 高一截（多一个「月」块）。pane-solo = 跳出面板的「页签取最高」：
     // 否则另外两家会被它顶高 82px（内容只占一半、下面全是空白）。它自己多高就多高 ——
     // 当前页签是它时，高度由 app.js 的 panesHeight() 单独算进来
     const root = build(`
-      <div class="pane pane-volc">
-        ${VOLC_WINS.map((w) => `
+      <div class="pane pane-quota pane-${pid}">
+        ${QUOTA_WINS.map((w) => `
         <div class="blk blk-q" data-win="${w.slot}">
           <div class="row">
             <div>
@@ -565,8 +571,10 @@
     function update(ctx) {
       const d = ctx.acc && ctx.acc.data;
       const alive = !!(d && ctx.acc.status === 'ok');
-      for (const w of VOLC_WINS) {
+      const anyKnown = alive && QUOTA_WINS.some((w) => d[w.slot] && d[w.slot].known);
+      for (const w of QUOTA_WINS) {
         const win = alive ? d[w.slot] : null;
+        blkOf(w.slot).hidden = !!opts.hideUnknown && anyKnown && !(win && win.known);
         // 窗口缺数据（该套餐没返回这一档）时**必须写 0 而不是 null**：CSS 变量拿到 null 会变成
         // 字符串 "null"，calc("null" * 1%) 失效后宽度退回 auto，直接画成满格。
         const known = !!(win && win.known);
@@ -581,15 +589,7 @@
       }
       if (ctx.acc && ctx.acc.tier) root.dataset.tier = ctx.acc.tier;
 
-      const parts = [];
-      if (d && d.plan) parts.push(d.plan === 'agent' ? 'Agent Plan' : 'Coding Plan');
-      if (d && d.bothSubscribed) {
-        parts.push('<span class="hint" title="这个账号两种套餐都订阅了。自动模式只显示先查到的那一种；'
-          + '要同时盯着另一个，去设置里再加一个账户、填同一对 AK/SK，把「套餐」固定成 Agent Plan">⚠ 两种套餐都订了</span>');
-      }
-      if (d && d.warn) {
-        parts.push(`<span class="hint" title="${esc(d.warn)}">⚠ 另一种套餐查询失败</span>`);
-      }
+      const parts = d ? opts.note(d, ctx) : [];
       $('.notetxt').innerHTML = '<span class="overtxt">▲ = 实际已超出预期</span>' + parts.join('');
       tick(ctx);
     }
@@ -598,7 +598,7 @@
       const d = ctx.acc && ctx.acc.data;
       const alive = !!(d && ctx.acc.status === 'ok');
       let anyOver = false;
-      for (const w of VOLC_WINS) {
+      for (const w of QUOTA_WINS) {
         const win = alive ? d[w.slot] : null;
         const pace = pacePercent(win);
         const over = overOf(win, pace, ctx.config);
@@ -616,7 +616,7 @@
       $('.notetxt').classList.toggle('hasover', anyOver);
 
       // 悬停进度条 → 解释幽灵段（与 GLM 同一套文案）
-      for (const w of VOLC_WINS) {
+      for (const w of QUOTA_WINS) {
         const blk = blkOf(w.slot);
         const bar = blk.querySelector('.pbar');
         const tip = blk.querySelector('.ptip');
@@ -659,25 +659,32 @@
   /* 胶囊那格只有 40px 高（和 GLM / DeepSeek 齐平）：三条窗口排三行会把行距压扁，还会把整枚
      胶囊顶高 6px。所以「月」在胶囊里退化成数字、跟在「周」那一行后面 —— 月额度涨得慢，条给不
      出更多信息，数还是要看得见。面板里三个大块照旧（那里横竖都有地方）。 */
-  const VOLC_BARS = VOLC_WINS.filter((w) => w.slot !== 'month');   // 胶囊里保留条形的那两条
+  const QUOTA_BARS = QUOTA_WINS.filter((w) => w.slot !== 'month');   // 胶囊里保留条形的那两条
 
-  const VOLC_CELL = `
+  const QUOTA_CELL = `
     <span class="dot"></span>
     <div class="rows">
-      ${VOLC_BARS.map((w) => `
+      ${QUOTA_BARS.map((w) => `
       <div class="grp"><span class="lab">${w.short}</span><div class="bar"><span class="ghost ${w.ghost}"></span><i class="${w.fill}"></i><span class="ovr ${w.ovr}"></span><span class="edge ${w.edge}"></span></div><b class="pct-${w.slot}">–</b>${w.slot === 'week' ? '<span class="mnum" title="月额度（面板里有完整一条）">月<b class="pct-month">–</b></span>' : ''}</div>`).join('')}
     </div>
     <span class="cap-warn" hidden></span>`;
 
-  /** 一格火山数据：两行 mini bar（5h / 周）+ 月数字，配速每秒由 app 的秒循环带上 */
-  function fillVolcCell(el, acc, ctx) {
+  /** 一格配额数据（火山 / Codex）：两行 mini bar（5h / 周）+ 月数字，配速每秒由 app 的秒循环带上。
+   *  hideUnknown：接口没给的那一行 / 月数字藏掉（只在至少知道一个窗口时；.grp 是 flex，hidden 属性压不住，得写 style） */
+  function fillQuotaCell(el, acc, ctx, hideUnknown) {
     const d = acc.data;
     const st = acc.status || 'boot';
     const alive = !!(d && st === 'ok');
+    const anyKnown = alive && QUOTA_WINS.some((w) => d[w.slot] && d[w.slot].known);
     let anyOver = false;
-    for (const w of VOLC_WINS) {
+    for (const w of QUOTA_WINS) {
       const win = alive ? d[w.slot] : null;
       const known = !!(win && win.known);
+      // 周那一行还挂着月数字：只知道月窗口时（免费号的 30 天窗口）这行得留着
+      const monthKnown = alive && !!(d.month && d.month.known);
+      const hide = !!hideUnknown && anyKnown && !known && !(w.slot === 'week' && monthKnown);
+      if (w.slot === 'month') el.querySelector('.mnum').style.display = hide ? 'none' : '';
+      else el.querySelector(`.pct-${w.slot}`).parentElement.style.display = hide ? 'none' : '';
       const pace = pacePercent(win);
       const over = overOf(win, pace, ctx.config);
       if (over > 0) anyOver = true;
@@ -701,15 +708,50 @@
     warn.textContent = st === 'expired' ? '⚠ 凭据失效' : '⚠ 未开通套餐';
   }
 
-  function makeVolcCapsule() {
-    const g = capsuleGroup('volc', VOLC_CELL, fillVolcCell);
-    g.el.classList.add('cap-volc');
+  function makeQuotaCapsule(pid, hideUnknown) {
+    const g = capsuleGroup(pid, QUOTA_CELL, (el, acc, ctx) => fillQuotaCell(el, acc, ctx, hideUnknown));
+    g.el.classList.add('cap-quota', 'cap-' + pid);
     return g;
+  }
+
+  /** 火山脚注：当前是哪种套餐 + 「两种都订了 / 另一种查询失败」 */
+  function volcNote(d) {
+    const parts = [];
+    if (d.plan) parts.push(d.plan === 'agent' ? 'Agent Plan' : 'Coding Plan');
+    if (d.bothSubscribed) {
+      parts.push('<span class="hint" title="这个账号两种套餐都订阅了。自动模式只显示先查到的那一种；'
+        + '要同时盯着另一个，去设置里再加一个账户、填同一对 AK/SK，把「套餐」固定成 Agent Plan">⚠ 两种套餐都订了</span>');
+    }
+    if (d.warn) {
+      parts.push(`<span class="hint" title="${esc(d.warn)}">⚠ 另一种套餐查询失败</span>`);
+    }
+    return parts;
+  }
+
+  /** Codex 脚注：撞上限额 / 按模型单列的额外限额 / 粘贴来的令牌还剩几天 */
+  function codexNote(d) {
+    const parts = [];
+    if (d.reached) parts.push('<span class="hint">⚠ 已达上限</span>');
+    for (const x of d.extras || []) {
+      const segs = QUOTA_WINS.filter((w) => x[w.slot] && x[w.slot].known).map((w) => `${w.short} ${x[w.slot].percent}%`);
+      if (segs.length) parts.push(`<span title="按模型单列的额外限额，不占主额度">${esc(x.name)}：${esc(segs.join(' · '))}</span>`);
+    }
+    // 本机来源由 Codex CLI 自己续期，不提过期；粘贴来的才需要人管
+    if (d.source !== 'local' && d.tokenExp) {
+      const left = d.tokenExp - Date.now();
+      const txt = left > 86400e3 ? `${Math.floor(left / 86400e3)} 天` : `${Math.max(1, Math.ceil(left / 3600e3))} 小时`;
+      const tip = 'access_token 的有效期。过期前到登录了 Codex 的机器上运行一次 codex（自动续期），再把 auth.json 重新粘过来';
+      parts.push(left < 2 * 86400e3
+        ? `<span class="hint" title="${esc(tip)}">⚠ 令牌 ${txt}后过期</span>`
+        : `<span title="${esc(tip)}">令牌 ${txt}后过期</span>`);
+    }
+    return parts;
   }
 
   window.PANES = {
     glm: { pane: makeGlmPane, capsule: makeGlmCapsule },
     deepseek: { pane: makeDsPane, capsule: makeDsCapsule },
-    volc: { pane: makeVolcPane, capsule: makeVolcCapsule },
+    volc: { pane: () => makeQuotaPane('volc', { note: volcNote }), capsule: () => makeQuotaCapsule('volc', false) },
+    codex: { pane: () => makeQuotaPane('codex', { note: codexNote, hideUnknown: true }), capsule: () => makeQuotaCapsule('codex', true) },
   };
 })();
