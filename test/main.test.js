@@ -42,6 +42,8 @@ let primaryWA = { x: 0, y: 0, width: 1920, height: 1040 };
 // 附加屏（并排 / 拔掉都靠它增删）：主进程三个显示器入口读的是同一份列表
 let extraDisplays = [];
 let cursor = { x: 0, y: 0 };   // getCursorScreenPoint：拖拽用例自己摆
+let captureCalls = 0;          // desktopCapturer.getSources 的调用次数
+let captureGate = null;        // 非 null = 截屏卡住（Promise 不回），测试自己放行
 const disp = () => ({
   id: 1, scaleFactor: 1,
   bounds: { x: primaryWA.x, y: primaryWA.y, width: primaryWA.width, height: primaryWA.height + 40 },
@@ -106,6 +108,11 @@ const electronStub = {
   app: {
     isPackaged: false,
     getPath: () => USERDATA,
+    getAppMetrics: () => [
+      { pid: 1, type: 'Browser', memory: { workingSetSize: 204800, privateBytes: 102400 } },
+      { pid: 2, type: 'Tab', memory: { workingSetSize: 51200, privateBytes: 30720 } },
+      { pid: 3, type: 'Tab', memory: { workingSetSize: 40960, privateBytes: 20480 } },
+    ],
     whenReady: () => Promise.resolve(),
     on: noop,
     requestSingleInstanceLock: () => true,
@@ -149,8 +156,8 @@ const electronStub = {
     getCursorScreenPoint: () => cursor,
     on: (e, fn) => { (screenHandlers[e] = screenHandlers[e] || []).push(fn); },
   },
-  powerMonitor: { on: (e, fn) => { (powerHandlers[e] = powerHandlers[e] || []).push(fn); } },
-  desktopCapturer: { getSources: async () => [] },
+  powerMonitor: { on: (e, fn) => { (powerHandlers[e] = powerHandlers[e] || []).push(fn); }, getSystemIdleState: () => 'active' },
+  desktopCapturer: { getSources: async () => { captureCalls++; if (captureGate) await captureGate.promise; return []; } },
   clipboard: { readText: () => '' },
   // 只放行两家官方域名：测试里出现别的域名说明代码写错了
   net: {
@@ -828,6 +835,30 @@ async function bootOnly(dir) {
   t('切页签触发重排：面板回到贴边侧（贴边锚定仍有效）',
     windowBounds.x + windowBounds.width === 1920 && windowBounds.y === 260 && windowBounds.height === 330 + 24,
     JSON.stringify(windowBounds));
+
+  console.log('\n主题截屏采样与内存日志:');
+  {
+    // 走 cfg:save 触发采样：不像 view:set 那样切视图，不打扰前后用例的窗口状态
+    const sample = () => call('cfg:save', { theme: 'auto' });
+    await wait(20);
+    let release;
+    captureGate = { promise: new Promise((r) => { release = r; }) };
+    const before = captureCalls;
+    sample();
+    sample();
+    sample();
+    await wait(20);
+    t('截屏没回来时不叠加第二次（卡住的 getSources 不会越堆越多）', captureCalls === before + 1, captureCalls - before);
+    release();
+    captureGate = null;
+    await wait(20);
+    sample();
+    await wait(20);
+    t('上一次回来后恢复采样（卡过一次不会永久停掉自动主题）', captureCalls === before + 2, captureCalls - before);
+    const logTxt = fs.readFileSync(path.join(USERDATA, 'main.log'), 'utf8');
+    t('启动时写一条内存基线：按进程类型列出工作集 / 私有，同类型用 + 连',
+      /内存\(工作集\/私有 MB\) · Browser 200\/100 · Tab 50\/30\+40\/20 · 主进程 JS 堆 \d+ 外部 \d+ · 累计截屏 \d+ 次/.test(logTxt));
+  }
 
   console.log('\n贴边悬停飞出窗（dock:hover → flyout）:');
   const fxShown = () => (flyoutStub ? flyoutStub.shownInactive : -1);

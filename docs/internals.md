@@ -111,4 +111,4 @@ tools/                图标生成 / 主图生成脚本
 
 **打包的两个收尾钩子**（`build/`）：`afterPack.js` 裁掉用不到的运行时组件（dxcompiler / dxil / elevate）；`afterArtifacts.js` 把 Windows 的 zip 重打成「解压一层 `GLM-Usage-Widget/` 文件夹」并改名 `-win64.zip`——electron-builder 26 的 zip 目标在 Windows 上写死了不套目录（`ArchiveTarget.js` 里的 `withoutDir = !isMac`），只能在产物出来后用自带的 7za 按同一套参数重打一遍。
 
-**排查**：日志和配置都在 `%APPDATA%\GLM 用量挂件\`（托盘 / 胶囊右键 →「打开日志文件夹」直达）。`main.log` 记了启动链路、每次 IPC、刷新结果和渲染层报错（环形截断 256KB），反馈问题直接贴它就行。
+**排查**：日志和配置都在 `%APPDATA%\GLM 用量挂件\`（托盘 / 胶囊右键 →「打开日志文件夹」直达）。`main.log` 记了启动链路、每次 IPC、刷新结果和渲染层报错（环形截断 256KB），反馈问题直接贴它就行。查内存增长看 `内存(工作集/私有 MB)` 那行：每 10 分钟按进程类型记一条，并带累计截屏次数。

@@ -170,6 +170,8 @@ let dragCtx = null;           // 拖拽上下文：{ ctx, pending, timer, idle, 
 let dragDiag = false;         // 下次采样时打一条坐标系诊断日志（排障用，一次即止）
 let dragging = false;         // 拖拽进行中：看门狗静默、主题巡逻暂停
 let themeDebounce = 0;
+let sampling = false;         // 截屏采样进行中：不叠加（getSources 卡住时不能越堆越多）
+let captures = 0;             // 本次运行累计截屏次数（内存日志里拿来对照增长）
 let dsTimer = null;           // 余额类高频轮询的定时器
 let dsPolling = false;        // 轮询进行中（避免与主周期叠加）
 let flyout = null;            // 第二个透明窗口：贴边悬停圆圈时的详情卡片（?flyout=1）
@@ -651,6 +653,7 @@ async function sampleAround() {
   const d = screen.getDisplayMatching(b);
   const tw = 240;
   const th = Math.max(1, Math.round((tw * d.bounds.height) / d.bounds.width));
+  captures++;
   const sources = await desktopCapturer.getSources({ types: ['screen'], thumbnailSize: { width: tw, height: th } });
   const src = sources.find((s) => s.display_id === String(d.id)) || sources[0];
   const img = src && src.thumbnail;
@@ -685,7 +688,10 @@ async function applyTheme() {
     if (config.theme !== 'auto') {
       resolvedTheme = config.theme;
     } else if (win) {
-      const lum = await sampleAround();
+      if (sampling) return;
+      sampling = true;
+      let lum;
+      try { lum = await sampleAround(); } finally { sampling = false; }
       if (lum != null) {
         // 双阈值迟滞：暗→亮需 >0.55，亮→暗需 <0.45，中间保持现主题
         // （定时采样后必须防抖：窗口边缘在采样环带内晃动时不来回横跳）
@@ -698,6 +704,24 @@ async function applyTheme() {
     }
   } catch (e) { log('主题采样失败（保持现主题）:', e && e.message); }
   broadcast();
+}
+
+/* ---------------- 内存日志：泄漏多半在原生层（JS 堆快照看不见），按进程类型记下来才分得清是谁在涨 ---------------- */
+const MEM_LOG_MS = 10 * 60000;
+
+function logMemory() {
+  try {
+    const mb = (kb) => Math.round((kb || 0) / 1024);
+    const byType = {};
+    for (const m of app.getAppMetrics()) {
+      // 工作集/私有（privateBytes 仅 Windows 有）；同类型多个进程（两个窗口）用 + 连
+      const v = `${mb(m.memory.workingSetSize)}/${mb(m.memory.privateBytes)}`;
+      (byType[m.type] = byType[m.type] || []).push(v);
+    }
+    const mu = process.memoryUsage();
+    log('内存(工作集/私有 MB) ·', Object.entries(byType).map(([k, v]) => `${k} ${v.join('+')}`).join(' · '),
+      `· 主进程 JS 堆 ${mb(mu.heapUsed / 1024)} 外部 ${mb(mu.external / 1024)} · 累计截屏 ${captures} 次`);
+  } catch (e) { log('内存日志失败:', e && e.message); }
 }
 
 /** 只把凭据尾号下发给渲染层用于回显，明文不出主进程 */
@@ -1691,8 +1715,13 @@ if (!gotLock) {
     setInterval(assertTopmost, 5000);
     win.on('show', assertTopmost);
 
-    // 背景明暗巡逻：浮窗不动、底下窗口切换（深↔浅）也要跟着换肤；拖拽中不采样
-    setInterval(() => { if (!dragging) applyTheme(); }, 20000);
+    // 背景明暗巡逻：浮窗不动、底下窗口切换（深↔浅）也要跟着换肤；拖拽中不采样。
+    // 桌面截屏是常驻进程里最重的原生调用：用户离开 / 锁屏时没人看挂件，不必采
+    setInterval(() => {
+      if (!dragging && powerMonitor.getSystemIdleState(120) === 'active') applyTheme();
+    }, 60000);
+    logMemory();
+    setInterval(logMemory, MEM_LOG_MS);
     // 显示器热插拔/分辨率缩放变化后，把窗口收回工作区内并重采样主题。
     // 拔屏往往只对被拔的那块屏派发 display-removed（幸存屏度量没变 → metrics-changed 不来），
     // 插屏同理只派发 display-added：三个事件都得挂，否则胶囊会停在已消失的屏幕上（看不见也点不着）。
