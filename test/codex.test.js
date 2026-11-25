@@ -153,14 +153,50 @@ const res = (body, status = 200) => ({
   t('API Key 登录的 auth.json → expired，说清是登录方式不对',
     /API Key/.test(C.readLocalAuth('/f', () => JSON.stringify({ OPENAI_API_KEY: 'sk-x' })).err.msg));
 
+  /* ---------------- SSH 远程 auth.json ---------------- */
+  console.log('\nSSH 远程 auth.json:');
+  let sshSeen = null;
+  const sOk = await C.readSshAuth('devbox -p 2222', async (bin, args) => {
+    sshSeen = { bin, args };
+    return { code: 0, stdout: 'Welcome banner\n' + AUTH_JSON, stderr: '', err: null };
+  });
+  t('SSH 读取成功：容忍登录横幅，提取 access_token 并带回 host',
+    sOk.token === ACCESS && sOk.host === 'devbox' && sshSeen.bin === 'ssh'
+    && sshSeen.args[0] === '-o' && sshSeen.args[1] === 'BatchMode=yes'
+    && sshSeen.args[sshSeen.args.length - 1] === C.REMOTE_AUTH_CMD, j(sshSeen));
+  t('SSH 远程文件缺失 → empty 并提示主机名',
+    (await C.readSshAuth('devbox', async () => ({
+      code: 1, stdout: '', stderr: 'cat: /home/u/.codex/auth.json: No such file or directory', err: new Error('exit 1'),
+    }))).err.kind === 'empty');
+  t('SSH 免密失败 → expired',
+    (await C.readSshAuth('devbox', async () => ({
+      code: 255, stdout: '', stderr: 'Permission denied (publickey).', err: new Error('exit 255'),
+    }))).err.kind === 'expired');
+  t('SSH 网络失败 → network',
+    (await C.readSshAuth('devbox', async () => ({
+      code: 255, stdout: '', stderr: 'ssh: Could not resolve hostname devbox', err: new Error('exit 255'),
+    }))).err.kind === 'network');
+  t('SSH 远程是 API Key 登录 → expired 并提示 ChatGPT 账号登录',
+    /API Key/.test((await C.readSshAuth('devbox', async () => ({
+      code: 0, stdout: JSON.stringify({ OPENAI_API_KEY: 'sk-x' }), stderr: '', err: null,
+    }))).err.msg));
+  t('SSH 注入目标直接拒绝（不调 ssh）',
+    (await C.readSshAuth('devbox;id', async () => { throw new Error('不该执行'); })).err.kind === 'error');
+
   /* ---------------- provider 实现 ---------------- */
   console.log('\nprovider 实现:');
   const codex = providers.byId('codex');
   t('注册了，走档位色、不分峰谷', !!codex && codex.accentMode === 'tier' && codex.peak === null);
-  t('凭据来源是下拉，令牌是选配（读本机时留空）', codex.credentials[0].kind === 'select'
-    && codex.credentials[0].options[0].value === 'paste' && codex.credentials[1].required === false);
-  t('校验：粘贴来源必须粘了东西；读本机可以空', !!codex.validate({ source: 'paste' })
-    && codex.validate({ source: 'paste', accessToken: ACCESS }) === '' && codex.validate({ source: 'local' }) === '');
+  t('凭据来源是下拉（paste/ssh/local），SSH 目标与令牌均选配', codex.credentials[0].kind === 'select'
+    && codex.credentials[0].options.map((o) => o.value).join(',') === 'paste,ssh,local'
+    && codex.credentials[1].required === false && codex.credentials[2].required === false);
+  t('校验：粘贴要令牌；SSH 要合法主机（不必粘令牌）；读本机可全空',
+    !!codex.validate({ source: 'paste' })
+    && codex.validate({ source: 'paste', accessToken: ACCESS }) === ''
+    && !!codex.validate({ source: 'ssh', sshTarget: '' })
+    && !!codex.validate({ source: 'ssh', sshTarget: 'host;id' })
+    && codex.validate({ source: 'ssh', sshTarget: 'user@10.0.0.5 -p 2222' }) === ''
+    && codex.validate({ source: 'local' }) === '');
 
   const ctx = (over) => ({
     fetchImpl: okFetch, accountName: '', config: { warnThreshold: 80, notifyReset: true },
@@ -173,6 +209,18 @@ const res = (body, status = 200) => ({
 
   const p2 = await codex.fetch({ source: 'local' }, ctx({ authPath: '/f', readImpl: () => AUTH_JSON }));
   t('读本机：每次读文件拿令牌', p2.ok && p2.data.source === 'local');
+  const pSsh = await codex.fetch({ source: 'ssh', sshTarget: 'devbox' }, ctx({
+    execImpl: async () => ({ code: 0, stdout: AUTH_JSON, stderr: '', err: null }),
+  }));
+  t('SSH 远程：每次经 ssh 读最新 auth.json 再查用量',
+    pSsh.ok && pSsh.data.source === 'ssh' && pSsh.data.sshHost === 'devbox' && pSsh.data.week.percent === 37);
+  t('SSH 来源没填主机 → empty', (await codex.fetch({ source: 'ssh', sshTarget: '' }, ctx())).kind === 'empty');
+  const eSsh = await codex.fetch({ source: 'ssh', sshTarget: 'devbox' }, ctx({
+    execImpl: async () => ({ code: 0, stdout: AUTH_JSON, stderr: '', err: null }),
+    fetchImpl: async () => res({}, 401),
+  }));
+  t('SSH 来源令牌失效：提示去远程主机跑 codex 自动续期、无需重新复制',
+    eSsh.kind === 'expired' && /devbox/.test(eSsh.msg) && /无需重新复制/.test(eSsh.msg), j(eSsh));
   const p3 = await codex.fetch({ source: 'local' }, ctx({ authPath: '/f', readImpl: () => { throw new Error('ENOENT'); } }));
   t('读本机但文件不在 → empty，msg 里有路径', !p3.ok && p3.kind === 'empty' && /\/f/.test(p3.msg));
 
@@ -196,6 +244,10 @@ const res = (body, status = 200) => ({
   t('同一个令牌不重复提醒', !s2.notes.some((n) => /过期/.test(n.title)));
   const s3 = await codex.fetch({ source: 'local' }, ctx({ authPath: '/f', readImpl: () => JSON.stringify({ tokens: { access_token: soon } }) }));
   t('读本机来源不提醒过期（Codex CLI 自己会续期）', s3.ok && !s3.notes.some((n) => /过期/.test(n.title)));
+  const sSsh = await codex.fetch({ source: 'ssh', sshTarget: 'devbox' }, ctx({
+    execImpl: async () => ({ code: 0, stdout: JSON.stringify({ tokens: { access_token: soon } }), stderr: '', err: null }),
+  }));
+  t('SSH 来源不弹即将过期提醒（远程 Codex 自动续期）', sSsh.ok && !sSsh.notes.some((n) => /过期/.test(n.title)));
 
   // 阈值提醒：周窗口过线
   const hot = await codex.fetch({ source: 'paste', accessToken: ACCESS }, ctx({ fetchImpl: async () => res(usageBody({ rate_limit: {

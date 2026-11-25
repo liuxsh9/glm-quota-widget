@@ -32,8 +32,8 @@ const close = (got, want, eps = 1e-9) => Math.abs(got - want) <= eps;
 
 /* ---------------- METRICS ---------------- */
 console.log('METRICS:');
-ok('四家都有列表，每项形如 { key, label, short }', () => {
-  assert.deepStrictEqual(Object.keys(M.METRICS).sort(), ['codex', 'deepseek', 'glm', 'volc']);
+ok('五家都有列表，每项形如 { key, label, short }', () => {
+  assert.deepStrictEqual(Object.keys(M.METRICS).sort(), ['codex', 'deepseek', 'gemini', 'glm', 'volc']);
   for (const [id, list] of Object.entries(M.METRICS)) {
     assert.ok(Array.isArray(list) && list.length > 0, `${id} 列表为空`);
     for (const m of list) {
@@ -59,6 +59,15 @@ ok('Codex：周排第一（改版后 Plus 只剩周窗口），也能选 5h + �
   const data = { five: { known: false, percent: 0 }, week: { known: true, percent: 37 } };
   assert.strictEqual(M.percentOf('codex', data, { metric: 'week' }).raw, 37);
   assert.strictEqual(M.percentOf('codex', data, { metric: 'five' }), null);   // 没有 5h 窗口 → 灰环，不是 0%
+});
+ok('Gemini：5h 排第一，支持周与 5h + 周双环', () => {
+  assert.deepStrictEqual(M.METRICS.gemini.map((m) => m.key), ['five', 'week', 'both']);
+  assert.deepStrictEqual(M.METRICS.gemini[2].dual, ['five', 'week']);
+  assert.strictEqual(M.normalize('gemini', {}).metric, 'five');
+  const data = { five: { known: true, percent: 50 }, week: { known: true, percent: 21 } };
+  const dual = M.percentOf('gemini', data, { metric: 'both' });
+  assert.strictEqual(dual.raw, 50);
+  assert.deepStrictEqual(dual.inner, { pct: 21, raw: 21 });
 });
 
 /* ---------------- normalize ---------------- */

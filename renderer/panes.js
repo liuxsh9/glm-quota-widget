@@ -736,8 +736,8 @@
       const segs = QUOTA_WINS.filter((w) => x[w.slot] && x[w.slot].known).map((w) => `${w.short} ${x[w.slot].percent}%`);
       if (segs.length) parts.push(`<span title="按模型单列的额外限额，不占主额度">${esc(x.name)}：${esc(segs.join(' · '))}</span>`);
     }
-    // 本机来源由 Codex CLI 自己续期，不提过期；粘贴来的才需要人管
-    if (d.source !== 'local' && d.tokenExp) {
+    // 本机 / SSH 来源每次重读最新 auth.json（由 Codex CLI 自己续期），不提过期；粘贴来的才需要人管
+    if (d.source !== 'local' && d.source !== 'ssh' && d.tokenExp) {
       const left = d.tokenExp - Date.now();
       const txt = left > 86400e3 ? `${Math.floor(left / 86400e3)} 天` : `${Math.max(1, Math.ceil(left / 3600e3))} 小时`;
       const tip = 'access_token 的有效期。过期前到登录了 Codex 的机器上运行一次 codex（自动续期），再把 auth.json 重新粘过来';
@@ -748,10 +748,26 @@
     return parts;
   }
 
+  /** Gemini（Antigravity）脚注：撞上限额 / 当前模型组（非默认时）/ 另一模型组摘要 */
+  function geminiNote(d) {
+    const parts = [];
+    if (d.reached) parts.push('<span class="hint">⚠ 已达上限</span>');
+    if (d.group === '3p') parts.push('<span>Claude &amp; GPT</span>');
+    for (const x of d.extras || []) {
+      const segs = QUOTA_WINS.filter((w) => x[w.slot] && x[w.slot].known).map((w) => `${w.short} ${x[w.slot].percent}%`);
+      if (segs.length) {
+        const tip = x.description ? `${x.name}：${x.description}` : `${x.name}（另一模型组配额）`;
+        parts.push(`<span title="${esc(tip)}">${esc(x.shortName || x.name)}：${esc(segs.join(' · '))}</span>`);
+      }
+    }
+    return parts;
+  }
+
   window.PANES = {
     glm: { pane: makeGlmPane, capsule: makeGlmCapsule },
     deepseek: { pane: makeDsPane, capsule: makeDsCapsule },
     volc: { pane: () => makeQuotaPane('volc', { note: volcNote }), capsule: () => makeQuotaCapsule('volc', false) },
     codex: { pane: () => makeQuotaPane('codex', { note: codexNote, hideUnknown: true }), capsule: () => makeQuotaCapsule('codex', true) },
+    gemini: { pane: () => makeQuotaPane('gemini', { note: geminiNote, hideUnknown: true }), capsule: () => makeQuotaCapsule('gemini', true) },
   };
 })();

@@ -4,7 +4,7 @@
 [![Download](https://img.shields.io/github/v/release/liuxsh9/glm-quota-widget?label=%E4%B8%8B%E8%BD%BD)](https://github.com/liuxsh9/glm-quota-widget/releases/latest)
 [![License](https://img.shields.io/github/license/liuxsh9/glm-quota-widget)](LICENSE)
 
-挂在屏幕角落的一枚小胶囊：**GLM Coding Plan**、**火山方舟**、**OpenAI Codex** 的套餐额度，加上 **DeepSeek** 的余额与消费，扫一眼全知道。点开是完整面板；每家云都能挂多个账户。
+挂在屏幕角落的一枚小胶囊：**GLM Coding Plan**、**火山方舟**、**OpenAI Codex**、**Google Gemini（Antigravity）** 的套餐额度，加上 **DeepSeek** 的余额与消费，扫一眼全知道。点开是完整面板；每家云都能挂多个账户。
 
 <img src="docs/hero.png" alt="胶囊 · 面板 · 贴边列（悬停圆圈弹出详情卡片）" width="880">
 
@@ -46,7 +46,8 @@
    | DeepSeek 余额 | **API Key**（`sk-` 开头） | [platform.deepseek.com](https://platform.deepseek.com) → 「API Keys」 |
    | DeepSeek 精确账单（选配） | 平台 `userToken` | 同一站点 F12 → Application → Local Storage → `userToken` |
    | 火山方舟 | **IAM 只读子账号的 AK/SK** | [console.volcengine.com/iam/keymanage](https://console.volcengine.com/iam/keymanage) → 见下方警告 |
-   | OpenAI Codex | Codex CLI 的 **`~/.codex/auth.json`**；Codex 登录在本机就选「读本机」 | 见[数据来源](docs/internals.md) |
+   | OpenAI Codex | **SSH 远程**自动读 `~/.codex/auth.json`（推荐跨机器，免拷贝）/ 读本机 / 手动粘贴 | 见[数据来源](docs/internals.md) |
+   | Gemini（Antigravity） | 官方 **`agy` CLI**（本机直接调用，或通过本机 **SSH** 免密调远程 `agy`） | 免密永不过期、零额度消耗，见[数据来源](docs/internals.md) |
 
    > **火山方舟这条特别注意：不要用主账号的 AK/SK。** 它的用量接口只认火山签名（AK/SK），而 AK/SK 能签这个身份名下的**所有**管理接口——远不止查用量。
    > 正确做法：建一个**只读子账号**（访问方式只勾「编程访问」、不给控制台密码），挂 `ArkReadOnlyAccess`（火山方舟只读）+ `BillingCenterReadOnlyAccess`（费用中心只读）两个预设策略，再用它的 AK/SK。

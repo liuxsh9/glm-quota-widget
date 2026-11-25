@@ -132,7 +132,7 @@
           <input type="number" id="threshold" min="1" max="99" step="1" value="80">
         </label>
       </div>
-      <p class="hintline">到阈值进度条变琥珀并弹通知；再高 10 个点变红。<b>配额型 provider（GLM、火山方舟）共用这一份阈值。</b></p>
+      <p class="hintline">到阈值进度条变琥珀并弹通知；再高 10 个点变红。<b>配额型 provider（GLM、火山方舟、Codex、Gemini）共用这一份阈值。</b></p>
       <label class="tgl"><input type="checkbox" id="nreset">5 小时额度重置时提醒</label>
       <label class="tgl"><input type="checkbox" id="pacealert" checked>用量超过预期进度时变色提醒</label>`,
     'ds-poll': () => `

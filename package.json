@@ -1,8 +1,8 @@
 {
   "name": "glm-quota-widget",
   "productName": "GLM 用量挂件",
-  "version": "0.10.1",
-  "description": "用量悬浮挂件：多账户监控 GLM Coding Plan 5小时/周配额 + DeepSeek 官方 API 余额/消费 + 火山方舟 / OpenAI Codex 套餐配额，provider 可扩展，托盘常驻",
+  "version": "0.11.0",
+  "description": "用量悬浮挂件：多账户监控 GLM Coding Plan 5小时/周配额 + DeepSeek 官方 API 余额/消费 + 火山方舟 / OpenAI Codex / Google Gemini（Antigravity）套餐配额，provider 可扩展，托盘常驻",
   "main": "main.js",
   "author": "liuxsh9",
   "license": "MIT",
@@ -27,6 +27,7 @@
     "test:providers": "node test/providers.test.js",
     "test:volc": "node test/volc.test.js",
     "test:codex": "node test/codex.test.js",
+    "test:gemini": "node test/gemini.test.js",
     "test:artifacts": "node test/artifacts.test.js",
     "test:main": "node test/main.test.js"
   },

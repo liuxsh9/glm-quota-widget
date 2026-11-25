@@ -477,7 +477,26 @@ async function bootOnly(dir) {
   const cxSwitch = await call('acc:update', { id: cxId, credentials: { source: 'paste' } });
   t('改成粘贴来源但没给令牌 → 更新被拒，凭据原样保留', !!cxSwitch.err
     && ((await state()).config.accounts.find((a) => a.id === cxId).creds.source || {}).value === 'local');
+  const cxBadSsh = await call('acc:update', { id: cxId, credentials: { source: 'ssh', sshTarget: 'host;id' } });
+  t('改成非法 SSH 目标 → 更新被拒', !!cxBadSsh.err);
   await call('acc:remove', { id: cxId });
+
+  console.log('\nGemini（Antigravity CLI）：跨字段校验（provider.validate）:');
+  const gmBadSsh = await call('acc:add', { provider: 'gemini', name: 'Gemini', credentials: { source: 'ssh', sshTarget: '', group: 'gemini' } });
+  t('SSH 模式没填主机 → 拒绝添加', !!gmBadSsh.err && /主机/.test(gmBadSsh.err), JSON.stringify(gmBadSsh.err));
+  const gmInject = await call('acc:add', { provider: 'gemini', name: 'Gemini', credentials: { source: 'ssh', sshTarget: 'host;id', group: 'gemini' } });
+  t('SSH 目标含 shell 注入字符 → 拒绝添加', !!gmInject.err, JSON.stringify(gmInject.err));
+  t('被拒时不落账户', !(await state()).config.accounts.some((a) => a.provider === 'gemini'));
+  const gmLocal = await call('acc:add', {
+    provider: 'gemini', name: 'Gemini',
+    credentials: { source: 'local', group: 'gemini', agyPath: '/nonexistent/agy' },
+  });
+  t('本机模式添加成功（不要求填 SSH 主机）', !gmLocal.err && !!gmLocal.providers.gemini, JSON.stringify(gmLocal.err));
+  const gmId = gmLocal.providers.gemini.accounts[0].id;
+  const gmBadUpd = await call('acc:update', { id: gmId, credentials: { source: 'ssh', sshTarget: '-o ProxyCommand=x host' } });
+  t('改成非法 SSH 参数 → 更新被拒，凭据原样保留', !!gmBadUpd.err
+    && ((await state()).config.accounts.find((a) => a.id === gmId).creds.source || {}).value === 'local');
+  await call('acc:remove', { id: gmId });
 
   console.log('\n剪贴板识别（按 provider 声明）:');
   electronStub.clipboard.readText = () => `Cookie: bigmodel_token_production=${FAKE_GLM}; Bearer ${FAKE_DS}`;

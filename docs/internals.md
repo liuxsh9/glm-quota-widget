@@ -45,13 +45,29 @@ Authorization: <API Key 或 bigmodel_token_production 的 JWT>   # 注意没有 
 
 数据来自 `GET https://chatgpt.com/backend-api/wham/usage`——Codex CLI 的 `/status` 和网页 Settings → Usage 用的就是它，只读、不调模型、不耗额度。**这是 ChatGPT 的内部接口**，没有公开文档，OpenAI 改版时可能短暂失灵。
 
-**凭据只用 `access_token`**（auth.json 里 `tokens.access_token`，整份粘进来会自动取它；`ChatGPT-Account-Id` 从这个 JWT 里读）。**刻意不用 `refresh_token` 续期**：它是一次性的，用一次就轮换——挂件在你的 PC 上拿复制来的 refresh_token 续期，会让服务器上 Codex 手里那份当场作废、被迫重新 `codex login`。代价是 access_token 约 **10 天**过期：面板脚注显示剩余天数，剩不到 2 天弹一次提醒；到时去那台机器上跑一次 `codex`（它会自己续期），再把 auth.json 粘过来。「读本机」来源每次拉取都重读文件，跟着本机 Codex CLI 的续期走，不用管过期。
+**凭据只用 `access_token`**（auth.json 里 `tokens.access_token`，整份粘进来会自动取它；`ChatGPT-Account-Id` 从这个 JWT 里读）。**刻意不用 `refresh_token` 续期**：它是一次性的，用一次就轮换——挂件在你的 PC 上拿复制来的 refresh_token 续期，会让服务器上 Codex 手里那份当场作废、被迫重新 `codex login`。支持三种来源：**SSH 远程**（推荐跨机器：每次免密 `ssh` 重读远程 `~/.codex/auth.json`，自动跟着远程 Codex CLI 的续期走，不用再手动拷贝）、**读本机**（同原理读本机文件）、**粘贴**（手动复制时 access_token 约 10 天过期，面板脚注显示剩余天数、剩不到 2 天弹一次提醒）。
 
 **窗口按长度认，不按位置认**：2026 年年中改版后 `primary_window` 从 5 小时变成了周、`secondary_window` 变成 null，免费号还见过 30 天窗口。接口给了哪几条就显示哪几条（Plus 目前只有周），没给的整块藏掉；按模型单列的额外限额（如 GPT-5.3-Codex-Spark）与代码审查额度写在面板脚注里。
 
 PC 上访问 chatgpt.com 要走代理的话不用另配：请求走 Electron 的网络栈，用的是系统代理设置。
 
 **胶囊上那格只有两行**：`5h` 和 `周` 带进度条，`月` 只给数字跟在「周」那一行后面——三条窗口排三行会把行距压扁，还会把整枚胶囊顶高（比 GLM / DeepSeek 那两格高出一截）。月额度涨得慢，条形给不出更多信息，数字够用；万一看得出「月超预期」，那个数字会变琥珀。要看完整的一条去面板。
+
+### Google Gemini（Antigravity 套餐的额度）
+
+数据来自官方 Antigravity CLI 的只读命令：
+
+```bash
+agy -p /usage --output-format json
+```
+
+返回 `duration_seconds: 0`、`num_turns: 0`、`total_tokens: 0`——不调模型、不消耗任何额度，直接复用 `agy` 自身的官方登录态。
+
+**两种连接方式**：
+- **本机 `agy CLI`**：直接调用本机 `agy`（`execFile`，Windows 上自动带 `windowsHide: true` 不闪黑框，若 `agy` 是 `.cmd` 包装脚本会自动回退 `cmd.exe /d /c agy`）。
+- **SSH 远程 `agy CLI`**：Antigravity 登录在远程 Linux / Mac 服务器时，通过本机自带 `ssh`（Windows 10/11 内置 OpenSSH）以 `BatchMode=yes` 免密执行远程 `agy -p /usage --output-format json`。只接受主机名 / `~/.ssh/config` 别名与有限的传输参数（`-p` / `-i` / `-J` / `-F` / `-l` / `-4` / `-6`），拒绝 shell 元字符与 `-o` 选项，全程不走 shell。之所以走 SSH 而不是导出凭据文件：Antigravity 的 OAuth 凭据存在系统钥匙串里、无明文 `auth.json`，且 Google `access_token` 仅 1 小时有效；SSH 方案免密、永不过期、不触碰原始凭据。
+
+**模型组**：Antigravity 返回「Gemini 模型」与「Claude & GPT 模型」两组 5 小时 / 周配额（`remaining_fraction` 换算为已用百分比，未激活窗口的 `1970-01-01T00:00:00Z` 门控为未知）。默认主显 Gemini 组，Claude & GPT 组摘要进面板脚注；想把 Claude & GPT 单独挂一个贴边圆圈或胶囊格，再加一个账户在「模型组」下拉切换即可。
 
 ## 隐私
 
@@ -66,6 +82,7 @@ npm run test:usage      # GLM 数据层（真实 token 走 GLM_TOKEN 或 /tmp/gl
 npm run test:deepseek   # DeepSeek 数据层（真实联测走 DS_API_KEY）
 npm run test:volc       # 火山方舟签名与解析（签名对官方 Python SDK 的黄金向量）
 npm run test:codex      # OpenAI Codex：auth.json 提取 / 窗口归槽 / 过期提醒（全 mock，不连网）
+npm run test:gemini     # Google Gemini（Antigravity）：SSH 校验 / agy JSON 归一化 / 提醒（全 mock，不连网）
 npm run test:providers  # provider 注册表与各家实现（全 mock，不连网）
 npm run test:main       # 主进程集成：桩掉 electron 真实加载 main.js，验迁移/CRUD/窗口尺寸联动
 npm run test:renderer   # 渲染层交互（需 python3 + playwright）
@@ -90,7 +107,9 @@ lib/providers/        ★ provider 注册表：meta.js（凭据声明 / 强调�
                         + index.js
 lib/usage.js          GLM 配额请求与解析（纯 Node，可独立测试）
 lib/volc.js           火山方舟签名 V4 + 两种套餐的请求与归一化（纯 Node，可独立测试）
-lib/codex.js          OpenAI Codex 用量接口 + 本机 auth.json 读取 + 窗口按长度归槽（纯 Node）
+lib/ssh.js            本机 / SSH 子进程安全执行与参数校验（Gemini 与 Codex 的 SSH 远程模式共用）
+lib/codex.js          OpenAI Codex 用量接口 + 本机 / SSH auth.json 读取 + 窗口按长度归槽（纯 Node）
+lib/gemini.js         Google Gemini（Antigravity）`agy -p /usage` 本机 / SSH 执行与归一化（纯 Node）
 lib/deepseek.js       DeepSeek 余额 + 平台账单两条链路
 lib/tokens.js         各家凭据的提取规则（UMD，主进程与渲染层共用）
 lib/ds-history.js     余额差值历史：样本抽稀、逐日 / 逐小时聚合、实时读数（按账户分桶）

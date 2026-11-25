@@ -1077,6 +1077,13 @@ function updateTray() {
           const first = ['five', 'week', 'month'].map((k) => r.data[k]).find((w) => w && w.known && w.nextResetTime);
           lines.push(`${who}Codex${lv}${r.data.reached ? ' · 已达上限' : ''}`);
           if (parts.length) lines.push(parts.join(' · ') + (first ? ` · ${fmtResetTime(first.nextResetTime)} 重置` : ''));
+        } else if (p.id === 'gemini') {
+          const lv = r.data.level ? ` ${levelName(r.data.level)}` : '';
+          const seg = (n, w) => (w && w.known ? `${n} ${w.percent}%` : null);
+          const parts = [seg('5小时', r.data.five), seg('周', r.data.week), seg('月', r.data.month)].filter(Boolean);
+          const first = ['five', 'week', 'month'].map((k) => r.data[k]).find((w) => w && w.known && w.nextResetTime);
+          lines.push(`${who}Gemini${lv}${r.data.reached ? ' · 已达上限' : ''}`);
+          if (parts.length) lines.push(parts.join(' · ') + (first ? ` · ${fmtResetTime(first.nextResetTime)} 重置` : ''));
         } else {
           lines.push(`${who}${p.name}`);
         }

@@ -916,11 +916,11 @@ with sync_playwright() as p:
     push(pg, view="settings")
     pg.wait_for_function("document.body.className.includes('view-settings')")
     pg.set_viewport_size({"width": SETTINGS[0], "height": SETTINGS[1]})
-    t("设置页分六段（四家 provider + 通用 + 贴边圆圈）", pg.locator("#settings .sech").count() == 6)
+    t("设置页分七段（五家 provider + 通用 + 贴边圆圈）", pg.locator("#settings .sech").count() == 7)
     t("三行账户（主号/备用号/DeepSeek）", pg.locator("#settings .acc-row").count() == 3)
     t("账户行显示尾号", "0LD_OLD" in pg.text_content("#provSecs"))
     t("账户状态词=已失效", "已失效" in pg.text_content("#provSecs .acc-row[data-id='a1'] .aword"))
-    t("四个添加按钮", pg.locator("#settings .acc-add").count() == 4)
+    t("五个添加按钮", pg.locator("#settings .acc-add").count() == 5)
     t("GLM 专属控件在 GLM 段", pg.evaluate("""() => {
         const glmSec = document.querySelector('#provSecs .acc-wrap[data-pid=\\'glm\\']');
         return !!glmSec && !!glmSec.querySelector('#threshold') && !!glmSec.querySelector('#pacealert');
@@ -1630,6 +1630,9 @@ with sync_playwright() as p:
     pg.evaluate("() => { const a = window.__state.providers.codex.accounts[0]; a.data.source = 'local'; window.__cb(window.__state); }")
     pg.wait_for_timeout(150)
     t("读本机来源：不提过期（Codex CLI 自己续期）", "过期" not in pg.text_content("#panel .pane-codex .notetxt"))
+    pg.evaluate("() => { const a = window.__state.providers.codex.accounts[0]; a.data.source = 'ssh'; window.__cb(window.__state); }")
+    pg.wait_for_timeout(150)
+    t("SSH 远程来源：同样不提过期（每次重读远程最新 auth.json）", "过期" not in pg.text_content("#panel .pane-codex .notetxt"))
     pg.evaluate("() => { const a = window.__state.providers.codex.accounts[0]; a.status = 'expired'; a.data = null; window.__cb(window.__state); }")
     pg.wait_for_timeout(150)
     t("失效时三个块都在（不塌成一条脚注），数字是「–」",
@@ -1649,8 +1652,59 @@ with sync_playwright() as p:
     pg.wait_for_timeout(150)
     t("Codex 收掉后胶囊回到两列", pg.locator("#capsule .cap-grp").count() == 2)
 
+    print("Gemini（Antigravity 套餐：5h + 周 + 另一模型组进脚注）:")
+    pg.evaluate("""() => {
+      const s = window.__state, H = 3600e3, D = 86400e3, NOW = Date.now();
+      const none = (lenMs) => ({ known: false, percent: 0, used: null, total: null, remaining: null,
+        nextResetTime: null, windowStart: null, windowMs: lenMs });
+      s.view = 'capsule';
+      s.providers.gemini = { name: 'Gemini（Antigravity 套餐）', tab: 'Gemini', tier: 'low',
+        accounts: [{ id: 'gm1', name: 'Gemini', enabled: true, status: 'ok', msg: '', lastFetchAt: NOW, tier: 'low',
+          data: { group: 'gemini', groupName: 'Gemini Models', level: null, source: 'local', sshHost: null, reached: false, fetchedAt: NOW,
+                  five: { known: true, percent: 50, used: null, total: null, remaining: null,
+                          nextResetTime: NOW + 3.5 * H, windowStart: NOW - 1.5 * H, windowMs: 5 * H },
+                  week: { known: true, percent: 21, used: null, total: null, remaining: null,
+                          nextResetTime: NOW + 6 * D, windowStart: NOW - 1 * D, windowMs: 7 * D },
+                  month: none(30 * D),
+                  extras: [{ name: 'Claude and GPT models', shortName: 'Claude/GPT', description: 'Claude Opus 5.5',
+                             five: { known: true, percent: 10 }, week: { known: true, percent: 5 }, month: none(30 * D), reached: false }] } }],
+        activeId: 'gm1' };
+      s.config.accounts.push({ id: 'gm1', provider: 'gemini', name: 'Gemini', enabled: true,
+        creds: { source: { set: true, tail: 'local', value: 'local' }, group: { set: true, tail: 'gemini', value: 'gemini' },
+                 sshTarget: { set: false, tail: '' }, agyPath: { set: false, tail: '' } } });
+      s.config.active.gemini = 'gm1';
+      window.__cb(s);
+    }""")
+    pg.wait_for_timeout(200)
+    t("Gemini 出一列胶囊", pg.locator("#capsule .cap-gemini").count() == 1)
+    t("胶囊显示 5h 50% 与周 21%，月数字藏掉", pg.evaluate("""() => {
+        const c = document.querySelector('#capsule .cap-gemini');
+        const vis = (e) => !!e && getComputedStyle(e).display !== 'none';
+        return c.querySelector('.pct-five').textContent === '50'
+          && c.querySelector('.pct-week').textContent === '21'
+          && !vis(c.querySelector('.mnum'));
+      }""") is True)
+    pg.evaluate("() => { window.__state.config.panelTab = 'gemini'; window.__state.view = 'panel'; window.__cb(window.__state); }")
+    pg.wait_for_timeout(250)
+    t("面板显示 5h 与周两块（月藏掉）",
+      pg.locator("#panel .pane-gemini .blk-q:not([hidden])").count() == 2
+      and pg.text_content("#panel .pane-gemini [data-win='five'] .pv") == "50"
+      and pg.text_content("#panel .pane-gemini [data-win='week'] .pv") == "21")
+    t("脚注附带另一模型组（Claude/GPT）摘要", "Claude/GPT：5h 10% · 周 5%" in pg.text_content("#panel .pane-gemini .notetxt"))
+    t("GLMLOGOS 含 gemini 图标", pg.evaluate("Boolean(window.GLMLOGOS && window.GLMLOGOS.gemini && window.GLMLOGOS.gemini.includes('<svg'))"))
+    # 还原现场：后面的用例按「两家」数列数
+    pg.evaluate("""() => {
+      const s = window.__state;
+      s.config.accounts = s.config.accounts.filter(a => a.id !== 'gm1');
+      delete s.providers.gemini; delete s.config.active.gemini;
+      s.config.panelTab = 'glm';
+      window.__cb(s);
+    }""")
+    pg.wait_for_timeout(150)
+    t("Gemini 收掉后胶囊回到两列", pg.locator("#capsule .cap-grp").count() == 2)
+
     print("provider 元数据（GLMPROV）:")
-    t("四家注册且 id 正确", pg.evaluate("GLMPROV.list.map(p => p.id).join()") == "glm,deepseek,volc,codex")
+    t("五家注册且 id 正确", pg.evaluate("GLMPROV.list.map(p => p.id).join()") == "glm,deepseek,volc,codex,gemini")
     t("凭据声明驱动设置页", pg.evaluate("GLMPROV.byId('deepseek').credentials.length") == 2)
     t("火山的套餐是下拉字段（带选项）", pg.evaluate("(() => { const c = GLMPROV.byId('volc').credentials.find(c => c.key === 'plan'); return c && c.kind === 'select' && c.options.length; })()") == 3)
     t("胶囊列宽已声明", pg.evaluate("GLMPROV.byId('glm').capsuleW") > 0)
