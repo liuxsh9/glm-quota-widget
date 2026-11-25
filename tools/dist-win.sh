@@ -9,13 +9,13 @@ export ELECTRON_BUILDER_BINARIES_MIRROR="https://npmmirror.com/mirrors/electron-
 
 # 目录版：解压一次即可秒启动（便携版每次运行都要自解压，冷启动慢）
 VER=$(node -p "require('./package.json').version")
-rm -rf "dist/GLM-Usage-Widget"
-cp -r dist/win-unpacked "dist/GLM-Usage-Widget"
+rm -rf "dist/QuotaDock"
+cp -r dist/win-unpacked "dist/QuotaDock"
 python3 - "$VER" <<'PY'
 import sys, zipfile, os
 ver = sys.argv[1]
-src = "dist/GLM-Usage-Widget"
-out = f"dist/GLM-Usage-Widget-{ver}-win64.zip"
+src = "dist/QuotaDock"
+out = f"dist/QuotaDock-{ver}-win64.zip"
 with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as z:
     for root, _dirs, files in os.walk(src):
         for f in files:
@@ -23,6 +23,6 @@ with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as z:
             z.write(p, os.path.relpath(p, "dist"))
 print("zip 完成:", out)
 PY
-rm -rf "dist/GLM-Usage-Widget"
+rm -rf "dist/QuotaDock"
 
 echo "BUILD_EXIT:0"

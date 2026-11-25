@@ -19,7 +19,7 @@ const IS_DEV = !app.isPackaged;
 const IS_PORTABLE = !!process.env.PORTABLE_EXECUTABLE_DIR;
 const ASSET = (f) => path.join(__dirname, 'assets', f);
 
-/* ---------------- 日志（%APPDATA%/GLM 用量挂件/main.log，异步写不挡交互） ---------------- */
+/* ---------------- 日志（%APPDATA%/QuotaDock/main.log，异步写不挡交互） ---------------- */
 let logCount = 0;
 function log() {
   try {
@@ -72,6 +72,32 @@ const DEFAULTS = {
 let config = { ...DEFAULTS };
 let migrated = false;   // 本次启动做了旧配置迁移（启动后立即写回，避免半迁移状态滞留）
 const CONFIG_PATH = () => path.join(app.getPath('userData'), 'config.json');
+/** 更名（GLM 用量挂件 → QuotaDock）前的旧 userData 目录名：首次启动自动无损复制配置与历史 */
+const LEGACY_USERDATA_DIRS = ['GLM 用量挂件', 'glm-quota-widget'];
+
+/** 若当前 userData 下尚无 config.json，从同级旧目录复制 config.json 与 ds-history.json（只复制不删除旧目录） */
+function migrateLegacyUserData() {
+  try {
+    const curDir = app.getPath('userData');
+    if (fs.existsSync(path.join(curDir, 'config.json'))) return false;
+    const parent = path.dirname(curDir);
+    for (const oldName of LEGACY_USERDATA_DIRS) {
+      const oldDir = path.join(parent, oldName);
+      if (oldDir === curDir) continue;
+      const oldCfg = path.join(oldDir, 'config.json');
+      if (!fs.existsSync(oldCfg)) continue;
+      fs.mkdirSync(curDir, { recursive: true });
+      fs.copyFileSync(oldCfg, path.join(curDir, 'config.json'));
+      const oldHist = path.join(oldDir, 'ds-history.json');
+      if (fs.existsSync(oldHist) && !fs.existsSync(path.join(curDir, 'ds-history.json'))) {
+        fs.copyFileSync(oldHist, path.join(curDir, 'ds-history.json'));
+      }
+      log('已从旧版目录迁移配置 ·', oldName, '→', path.basename(curDir));
+      return true;
+    }
+  } catch (e) { log('迁移旧版配置失败（忽略，按首次运行处理）:', e && e.message); }
+  return false;
+}
 
 /** 旧平铺配置 → accounts[] 的确定性 id（ds 差值历史迁移要挂到同一个 id 上） */
 const MIGRATE_GLM_ID = 'glm0';
@@ -1095,7 +1121,7 @@ function updateTray() {
       else if (r.status === 'error') lines.push(`${who}${p.name}：更新失败`);
     }
   }
-  if (!lines.length) lines.push('用量挂件');
+  if (!lines.length) lines.push('QuotaDock');
   tray.setToolTip(lines.slice(0, 5).join('\n')); // Windows 托盘提示有长度上限
 
   // 动态图标：状态未变化时不重设
@@ -1681,6 +1707,7 @@ if (!gotLock) {
   });
 
   app.whenReady().then(() => {
+    migrateLegacyUserData();
     loadConfig();
     loadDsHistory();
     if (migrated) saveConfig();   // 平铺 → accounts 的迁移立即落盘

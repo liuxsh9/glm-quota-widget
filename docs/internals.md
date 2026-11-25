@@ -71,7 +71,7 @@ agy -p /usage --output-format json
 
 ## 隐私
 
-凭据只存在本机 `%APPDATA%\GLM 用量挂件\config.json`，明文不出主进程（界面只用尾号回显）；请求直连上述官方域名，不经任何第三方。
+凭据只存在本机 `%APPDATA%\QuotaDock\config.json`（旧版 `%APPDATA%\GLM 用量挂件\` 的配置会在首次启动时自动无损复制迁移），明文不出主进程（界面只用尾号回显）；请求直连上述官方域名，不经任何第三方。
 
 ## 开发
 
@@ -89,7 +89,7 @@ npm run test:renderer   # 渲染层交互（需 python3 + playwright）
 npm run test:drag       # 拖拽几何
 npm run test:dock       # 贴边吸附几何（多屏接缝 / 任务栏 / 负坐标）
 npm run test:dock-metric # 圆圈百分比口径与圆环连续配色
-npm run test:artifacts  # 打包钩子：在临时目录真打一份 zip，验里面套了 GLM-Usage-Widget/ 一层
+npm run test:artifacts  # 打包钩子：在临时目录真打一份 zip，验里面套了 QuotaDock/ 一层
 npm run icon            # 重新生成图标
 python3 tools/shots.py  # 重新生成 README 主图（假数据）
 npm run dist:win        # 打包 Windows 安装版 + 便携版（Linux 上出安装版需要 wine）
@@ -128,6 +128,6 @@ tools/                图标生成 / 主图生成脚本
 
 现成的四家可以直接抄：`glm.js`（最简：百分比配额）、`volc.js`（AK/SK 签名 + 三个窗口 + 枚举型凭据字段）、`codex.js`（跨字段校验 `validate` + 读本机文件 / 粘贴两种来源）、`deepseek.js`（两条链路各自降级 + 余额高频采样）。
 
-**打包的两个收尾钩子**（`build/`）：`afterPack.js` 裁掉用不到的运行时组件（dxcompiler / dxil / elevate）；`afterArtifacts.js` 把 Windows 的 zip 重打成「解压一层 `GLM-Usage-Widget/` 文件夹」并改名 `-win64.zip`——electron-builder 26 的 zip 目标在 Windows 上写死了不套目录（`ArchiveTarget.js` 里的 `withoutDir = !isMac`），只能在产物出来后用自带的 7za 按同一套参数重打一遍。
+**打包的两个收尾钩子**（`build/`）：`afterPack.js` 裁掉用不到的运行时组件（dxcompiler / dxil / elevate）；`afterArtifacts.js` 把 Windows 的 zip 重打成「解压一层 `QuotaDock/` 文件夹」并改名 `-win64.zip`——electron-builder 26 的 zip 目标在 Windows 上写死了不套目录（`ArchiveTarget.js` 里的 `withoutDir = !isMac`），只能在产物出来后用自带的 7za 按同一套参数重打一遍。
 
-**排查**：日志和配置都在 `%APPDATA%\GLM 用量挂件\`（托盘 / 胶囊右键 →「打开日志文件夹」直达）。`main.log` 记了启动链路、每次 IPC、刷新结果和渲染层报错（环形截断 256KB），反馈问题直接贴它就行。查内存增长看 `内存(工作集/私有 MB)` 那行：每 10 分钟按进程类型记一条，并带累计截屏次数。
+**排查**：日志和配置都在 `%APPDATA%\QuotaDock\`（托盘 / 胶囊右键 →「打开日志文件夹」直达）。`main.log` 记了启动链路、每次 IPC、刷新结果和渲染层报错（环形截断 256KB），反馈问题直接贴它就行。查内存增长看 `内存(工作集/私有 MB)` 那行：每 10 分钟按进程类型记一条，并带累计截屏次数。

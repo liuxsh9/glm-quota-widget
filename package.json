@@ -1,17 +1,17 @@
 {
-  "name": "glm-quota-widget",
-  "productName": "GLM 用量挂件",
-  "version": "0.11.0",
-  "description": "用量悬浮挂件：多账户监控 GLM Coding Plan 5小时/周配额 + DeepSeek 官方 API 余额/消费 + 火山方舟 / OpenAI Codex / Google Gemini（Antigravity）套餐配额，provider 可扩展，托盘常驻",
+  "name": "quotadock",
+  "productName": "QuotaDock",
+  "version": "0.12.0",
+  "description": "Desktop AI quota & balance widget for GLM Coding Plan, DeepSeek, Volcengine Ark, OpenAI Codex, and Google Gemini (Antigravity)",
   "main": "main.js",
   "author": "liuxsh9",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/liuxsh9/glm-quota-widget.git"
+    "url": "https://github.com/liuxsh9/quotadock.git"
   },
-  "homepage": "https://github.com/liuxsh9/glm-quota-widget#readme",
-  "bugs": "https://github.com/liuxsh9/glm-quota-widget/issues",
+  "homepage": "https://github.com/liuxsh9/quotadock#readme",
+  "bugs": "https://github.com/liuxsh9/quotadock/issues",
   "scripts": {
     "start": "electron .",
     "test:usage": "node test/usage.test.js",
@@ -36,8 +36,8 @@
     "electron-builder": "26.15.3"
   },
   "build": {
-    "appId": "cn.bigmodel.glmusage",
-    "productName": "GLM-Usage-Widget",
+    "appId": "io.github.liuxsh9.quotadock",
+    "productName": "QuotaDock",
     "directories": {
       "output": "dist",
       "buildResources": "build"
@@ -77,7 +77,7 @@
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
-      "shortcutName": "GLM 用量挂件"
+      "shortcutName": "QuotaDock"
     }
   }
 }

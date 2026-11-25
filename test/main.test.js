@@ -1131,6 +1131,29 @@ async function bootOnly(dir) {
     && b5.accSteps.h0 === 1 * 62 + 40 && b5.accSteps.h1 === 2 * 62 + 40 && b5.accSteps.h2 === 1 * 62 + 40,
     JSON.stringify(b5.accSteps || b5));
 
+  // 更名（GLM 用量挂件 → QuotaDock）自动从同级旧 userData 目录迁移 config.json 与 ds-history.json
+  const migParent = fs.mkdtempSync(path.join(os.tmpdir(), 'qd-legacy-mig-'));
+  const oldUserDir = path.join(migParent, 'GLM 用量挂件');
+  const newUserDir = path.join(migParent, 'QuotaDock');
+  fs.mkdirSync(oldUserDir, { recursive: true });
+  fs.mkdirSync(newUserDir, { recursive: true });
+  fs.writeFileSync(path.join(oldUserDir, 'config.json'), JSON.stringify({
+    view: 'capsule',
+    accounts: [{ id: 'g_old', provider: 'glm', name: '旧号', enabled: false, credentials: { token: FAKE_GLM } }],
+  }));
+  fs.writeFileSync(path.join(oldUserDir, 'ds-history.json'), JSON.stringify({ d0: [[Date.now() - 60e3, 100]] }));
+  const migRun = spawnSync(process.execPath, [__filename], {
+    cwd: CWD, encoding: 'utf8', env: { ...process.env, GLM_TEST_BOOT: newUserDir }, timeout: 30000,
+  });
+  let migOut = null;
+  try { migOut = JSON.parse(String(migRun.stdout || '').trim().split('\n').filter(Boolean).pop()); } catch { }
+  t('更名后首次启动自动从旧目录「GLM 用量挂件」复制 config.json 与 ds-history.json',
+    !!migOut && Array.isArray(migOut.accounts) && migOut.accounts.some((a) => a.id === 'g_old')
+    && fs.existsSync(path.join(newUserDir, 'ds-history.json'))
+    && fs.existsSync(path.join(oldUserDir, 'config.json')),   // 旧目录只读复制、不破坏
+    JSON.stringify(migOut));
+  try { fs.rmSync(migParent, { recursive: true, force: true }); } catch { }
+
   // 凭据只落在本机 userData，测试结束顺手删掉
   try { fs.rmSync(USERDATA, { recursive: true, force: true }); } catch { /* 清理失败不影响结论 */ }
 

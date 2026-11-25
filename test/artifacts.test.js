@@ -27,25 +27,25 @@ async function t(name, fn) {
   // —— 解析：Windows 与 Linux 两种输出都必须归一化成同样的东西 ——
   // 这条就是 v0.6.0 翻车的那一步：反斜杠 + CRLF 没处理 → 误判不合格 → 静默回退。
   const win = [
-    'Path = GLM-Usage-Widget\r',
-    'Path = GLM-Usage-Widget\\GLM-Usage-Widget.exe\r',
-    'Path = GLM-Usage-Widget\\resources\\app.asar\r',
-    'Path = GLM-Usage-Widget\\locales\\zh-CN.pak\r',
+    'Path = QuotaDock\r',
+    'Path = QuotaDock\\QuotaDock.exe\r',
+    'Path = QuotaDock\\resources\\app.asar\r',
+    'Path = QuotaDock\\locales\\zh-CN.pak\r',
     '',
   ].join('\n');
   const lin = [
-    'Path = GLM-Usage-Widget',
-    'Path = GLM-Usage-Widget/GLM-Usage-Widget.exe',
-    'Path = GLM-Usage-Widget/resources/app.asar',
-    'Path = GLM-Usage-Widget/locales/zh-CN.pak',
+    'Path = QuotaDock',
+    'Path = QuotaDock/QuotaDock.exe',
+    'Path = QuotaDock/resources/app.asar',
+    'Path = QuotaDock/locales/zh-CN.pak',
   ].join('\n');
 
   await t('Windows 风格的列表输出被归一化成 / 分隔', () => {
     assert.deepStrictEqual(hook.parseListedPaths(win), [
-      'GLM-Usage-Widget',
-      'GLM-Usage-Widget/GLM-Usage-Widget.exe',
-      'GLM-Usage-Widget/resources/app.asar',
-      'GLM-Usage-Widget/locales/zh-CN.pak',
+      'QuotaDock',
+      'QuotaDock/QuotaDock.exe',
+      'QuotaDock/resources/app.asar',
+      'QuotaDock/locales/zh-CN.pak',
     ]);
   });
 
@@ -73,18 +73,18 @@ async function t(name, fn) {
   const appDir = path.join(dist, 'win-unpacked');
   fs.mkdirSync(path.join(appDir, 'resources'), { recursive: true });
   fs.mkdirSync(path.join(appDir, 'locales'), { recursive: true });
-  fs.writeFileSync(path.join(appDir, 'GLM-Usage-Widget.exe'), 'MZ fake');
+  fs.writeFileSync(path.join(appDir, 'QuotaDock.exe'), 'MZ fake');
   fs.writeFileSync(path.join(appDir, 'resources', 'app.asar'), 'fake asar');
   fs.writeFileSync(path.join(appDir, 'locales', 'zh-CN.pak'), 'fake pak');
 
-  const flat = path.join(dist, 'GLM-Usage-Widget-0.0.0-win.zip');
+  const flat = path.join(dist, 'QuotaDock-0.0.0-win.zip');
   fs.writeFileSync(flat, 'placeholder for the flat zip');
 
   let made = null, skipped = null;
   try {
     made = await hook({
       outDir: dist,
-      configuration: { productName: 'GLM-Usage-Widget', compression: 'normal' },
+      configuration: { productName: 'QuotaDock', compression: 'normal' },
       artifactPaths: [flat],
     });
     if (!made.length) skipped = '钩子没认出平铺 zip 的产物路径';
@@ -95,24 +95,24 @@ async function t(name, fn) {
   if (skipped) {
     console.log('  · 跳过端到端（' + skipped.slice(0, 70) + '…）');
   } else {
-    const win64 = path.join(dist, 'GLM-Usage-Widget-0.0.0-win64.zip');
+    const win64 = path.join(dist, 'QuotaDock-0.0.0-win64.zip');
     await t('产出 -win64.zip，平铺的 -win.zip 被删掉', () => {
       assert.ok(fs.existsSync(win64), '缺少 ' + path.basename(win64));
       assert.ok(!fs.existsSync(flat), '平铺 zip 应该被删掉');
       assert.deepStrictEqual(made, [win64]);
     });
 
-    await t('归档里每一条都在 GLM-Usage-Widget/ 之下，且文件都打进去了', async () => {
+    await t('归档里每一条都在 QuotaDock/ 之下，且文件都打进去了', async () => {
       const { execFileSync } = require('child_process');
       const sevenZip = path.join(__dirname, '..',
         'node_modules', 'app-builder-lib', 'out', 'toolsets', '7zip.js');
       const paths = hook.parseListedPaths(execFileSync(await require(sevenZip).getPath7za(),
         ['l', '-ba', '-slt', win64], { encoding: 'utf8' }));
       assert.ok(paths.length >= 4, '条目太少：' + JSON.stringify(paths));
-      const bad = paths.filter((p) => p !== 'GLM-Usage-Widget' && !p.startsWith('GLM-Usage-Widget/'));
-      assert.deepStrictEqual(bad, [], '有不在 GLM-Usage-Widget/ 下的条目');
-      for (const f of ['GLM-Usage-Widget/GLM-Usage-Widget.exe',
-        'GLM-Usage-Widget/resources/app.asar', 'GLM-Usage-Widget/locales/zh-CN.pak']) {
+      const bad = paths.filter((p) => p !== 'QuotaDock' && !p.startsWith('QuotaDock/'));
+      assert.deepStrictEqual(bad, [], '有不在 QuotaDock/ 下的条目');
+      for (const f of ['QuotaDock/QuotaDock.exe',
+        'QuotaDock/resources/app.asar', 'QuotaDock/locales/zh-CN.pak']) {
         assert.ok(paths.includes(f), '缺条目 ' + f);
       }
     });

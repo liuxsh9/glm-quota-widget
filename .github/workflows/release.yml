@@ -81,7 +81,7 @@ jobs:
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: glm-quota-widget-win
+          name: quotadock-win
           path: |
             dist/*.exe
             dist/*.zip

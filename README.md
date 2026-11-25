@@ -1,77 +1,104 @@
-# <img src="assets/icon.png" width="36" alt=""> GLM 用量挂件
+<div align="center">
+  <img src="assets/icon.png" width="76" alt="QuotaDock Logo">
+  <h1>QuotaDock</h1>
+  <p><strong>常驻桌面的 AI 额度与余额监控挂件</strong></p>
+  <p>无需切换浏览器，在屏幕角落一眼掌握 GLM、DeepSeek、火山方舟、OpenAI Codex 与 Google Gemini 的实时配额与消费。</p>
 
-[![Release](https://github.com/liuxsh9/glm-quota-widget/actions/workflows/release.yml/badge.svg)](https://github.com/liuxsh9/glm-quota-widget/actions/workflows/release.yml)
-[![Download](https://img.shields.io/github/v/release/liuxsh9/glm-quota-widget?label=%E4%B8%8B%E8%BD%BD)](https://github.com/liuxsh9/glm-quota-widget/releases/latest)
-[![License](https://img.shields.io/github/license/liuxsh9/glm-quota-widget)](LICENSE)
+  <p>
+    <a href="https://github.com/liuxsh9/quotadock/actions/workflows/release.yml"><img src="https://github.com/liuxsh9/quotadock/actions/workflows/release.yml/badge.svg" alt="Release"></a>
+    <a href="https://github.com/liuxsh9/quotadock/releases/latest"><img src="https://img.shields.io/github/v/release/liuxsh9/quotadock?label=Release" alt="Latest Release"></a>
+    <a href="https://github.com/liuxsh9/quotadock/releases"><img src="https://img.shields.io/github/downloads/liuxsh9/quotadock/total?label=Downloads" alt="Downloads"></a>
+    <img src="https://img.shields.io/badge/platform-Windows%2010%2F11%20x64-0078D4" alt="Platform">
+    <a href="LICENSE"><img src="https://img.shields.io/github/license/liuxsh9/quotadock" alt="License"></a>
+  </p>
 
-挂在屏幕角落的一枚小胶囊：**GLM Coding Plan**、**火山方舟**、**OpenAI Codex**、**Google Gemini（Antigravity）** 的套餐额度，加上 **DeepSeek** 的余额与消费，扫一眼全知道。点开是完整面板；每家云都能挂多个账户。
+  <p><strong>简体中文</strong> · <a href="README.en.md">English</a></p>
+</div>
 
-<img src="docs/hero.png" alt="胶囊 · 面板 · 贴边列（悬停圆圈弹出详情卡片）" width="880">
+<p align="center">
+  <img src="docs/hero.webp" width="880" alt="QuotaDock 胶囊、展开面板与贴边圆圈视图">
+  <br>
+  <sub>悬浮胶囊（多平台多账户） · 展开详情面板（配速预测 / 消费柱图） · 流体贴边圆圈与悬停飞出卡片</sub>
+</p>
 
-<sub>左上 = 胶囊（四家各一列，GLM 两个号）· 中 = GLM / Codex 面板 · 右 = 贴边列，悬停圆圈弹出该账户的详情卡片（图里是 DeepSeek）。</sub>
+## 核心特性
 
-## 它能做什么
+- **双形态常驻桌面**：平时为紧凑悬浮胶囊；拖至屏幕左 / 右边缘松手，自动吸附为流体圆角贴边圆圈（支持双环显示 5h + 周额度），鼠标悬停即刻弹出该账户详情卡片。
+- **实时配速与超支预警**：进度条内置「时间均摊预期」斜纹参考线——实际消耗超前时自动标红超支段并转琥珀警示，提前感知额度透支风险。
+- **多平台、多账户统一管理**：同一平台可同时挂载多个账号，支持「切换」与「平铺」两种胶囊布局，每个账户独立配色、独立提醒与独立贴边口径。
+- **跨机器 SSH 免密直连**：针对登录在远程 Linux / Mac 服务器上的 **OpenAI Codex** 与 **Google Gemini (Antigravity)**，通过 Windows 内置 OpenSSH 免密读取最新状态，告别定期手工拷贝凭据。
+- **原生级细节打磨**：背景明暗自动切换深浅磨砂玻璃、余额默认打码防窥、多显示器热插拔自适应、带抖动与限流退避的静默轮询、托盘常驻与开机自启。
+- **零遥测、本地直连**：所有凭据仅存于本机配置文件，明文永不出主进程；请求直连各家官方域名，不经过任何第三方中转服务。
 
-- **不用打开任何窗口**：胶囊上一眼看完各条配额进度 + 余额；可拖到任意位置、始终置顶
-- **预期进度**：进度条上的斜纹段 = 按时间均摊、此刻「应该」用掉的量——实际一旦超过它，超出那段标红、整体转琥珀提醒，账单还没到也能提前知道自己花超了
-- **多账户**：同一家云挂几个号都行。「切换」模式只显示当前号、点标签换人；「平铺」模式每个号各占一格，一眼看全
-- **完整面板**：GLM 给百分比 / 积分 / 重置倒计时；火山方舟与 Codex 给 5 小时 / 周 / 月三条窗口；DeepSeek 给余额、今日 / 近 7 天 / 本月消费、消费柱状图与可用天数
-- **贴边模式**：把挂件拖到屏幕左 / 右边缘松手 → 收成一列圆圈（每个启用账户一个），环色随百分比连续渐变，鼠标悬停圆圈弹出该账户的详情卡片
-- **安静省心**：余额默认打码（瞟一眼看不到价格）；深浅色背景自动换玻璃；默认 10 分钟自动刷新（带随机抖动与限流退避）；单实例，托盘常驻
+## 支持的服务商
 
-## 安装
+| 服务商 | 监控内容 | 接入方式 | 特性亮点 |
+|---|---|---|---|
+| **GLM Coding Plan** | 5h / 周配额百分比、积分、重置倒计时 | API Key（推荐）或登录 Cookie | 峰谷时段标识、5h + 周双环 |
+| **DeepSeek API** | 账户余额、今日 / 近 7 天 / 本月消费、可用天数 | API Key（选配平台 `userToken` 精确账单） | 2 分钟高频余额采样、4 档消费柱图、半价空闲时段提示 |
+| **火山方舟 Coding / Agent Plan** | 5h / 周 / 月三窗口调用次数配额 | IAM 只读子账号 AK / SK | 自动识别套餐类型，支持同账号双套餐分账户监控 |
+| **OpenAI Codex** | 5h / 周 / 月套餐配额、按模型额外限额 | **SSH 远程** / 本机 `~/.codex/auth.json` / 手动粘贴 | 仅读 `access_token`，绝不触发 `refresh_token` 登出原设备 |
+| **Google Gemini (Antigravity)** | 5h / 周配额（Gemini 组与 Claude/GPT 组） | 官方 `agy` CLI（本机 / **SSH 远程**） | 只读零额度消耗、免密永不过期、支持模型组切换 |
 
-支持 Windows 10 / 11（x64）。到 [Releases](https://github.com/liuxsh9/glm-quota-widget/releases/latest) 下载（推 tag 自动构建），三选一：
+## 下载与安装
 
-| 文件 | 说明 |
+支持 **Windows 10 / 11 (x64)**，前往 [Releases](https://github.com/liuxsh9/quotadock/releases/latest) 下载：
+
+| 安装包 | 说明 |
 |---|---|
-| `GLM-Usage-Widget-x.y.z-win64.zip` | **推荐 · 目录版**：解压得到一层 `GLM-Usage-Widget/` 文件夹，双击里面的 `GLM-Usage-Widget.exe`，约 1 秒启动 |
-| `GLM-Usage-Widget Setup x.y.z.exe` | 安装版：装进本机，带桌面快捷方式，支持开机自启 |
-| `GLM-Usage-Widget x.y.z.exe` | 便携版：单文件 ~70MB，即拷即用，但每次启动都要自解压到临时目录，冷启动 5~20 秒，适合 U 盘应急 |
+| `QuotaDock-x.y.z-win64.zip` | **推荐 · 绿色目录版**：解压后双击 `QuotaDock/QuotaDock.exe`，约 1 秒冷启动，支持开机自启 |
+| `QuotaDock Setup x.y.z.exe` | **标准安装版**：向导式安装，自动创建桌面快捷方式，支持开机自启 |
+| `QuotaDock x.y.z.exe` | **单文件便携版**：即拷即用，每次启动需自解压（冷启动较慢，不支持开机自启） |
 
-> 只有安装版和目录版能开机自启（便携版每次解压的路径都不一样，设置里会自动置灰）。
+> 从旧版 **GLM 用量挂件** 升级时，首次启动会自动从 `%APPDATA%\GLM 用量挂件\` 无损复制已有配置与历史记录，无需重新配置。
 
-> **第一次运行可能弹「Windows 已保护你的电脑（发布者未知）」——这是正常的**：这个包没买代码签名证书（开源小工具的常态），而浏览器下载会给文件打上「来自互联网」标记。
-> 点「更多信息」→「仍要运行」即可；或者**解压之前**右键那个 zip → 属性 → 勾选「解除锁定（Unblock）」，解压出来的 exe 就不再弹了。
+<details>
+<summary>Windows 首次运行提示「已保护你的电脑（未知发布者）」？</summary>
 
-## 上手
+开源工具未购买商业代码签名证书，浏览器下载的压缩包会附带「来自互联网」标记。解压前右键 `.zip` → **属性** → 勾选 **解除锁定（Unblock）** 后再解压，或在弹窗点 **更多信息 → 仍要运行** 即可。
 
-1. 启动后点胶囊 → 进设置
-2. 按提示粘贴凭据：
+</details>
 
-   | 想监控 | 需要什么 | 怎么拿 |
-   |---|---|---|
-   | GLM | **API Key**（推荐，长期有效） | [bigmodel.cn](https://www.bigmodel.cn/coding-plan/personal/overview) → 控制台「API Keys」→ 创建 |
-   | GLM | 或登录 Cookie（约 3 天失效） | F12 → Application → Cookies → `bigmodel_token_production` |
-   | DeepSeek 余额 | **API Key**（`sk-` 开头） | [platform.deepseek.com](https://platform.deepseek.com) → 「API Keys」 |
-   | DeepSeek 精确账单（选配） | 平台 `userToken` | 同一站点 F12 → Application → Local Storage → `userToken` |
-   | 火山方舟 | **IAM 只读子账号的 AK/SK** | [console.volcengine.com/iam/keymanage](https://console.volcengine.com/iam/keymanage) → 见下方警告 |
-   | OpenAI Codex | **SSH 远程**自动读 `~/.codex/auth.json`（推荐跨机器，免拷贝）/ 读本机 / 手动粘贴 | 见[数据来源](docs/internals.md) |
-   | Gemini（Antigravity） | 官方 **`agy` CLI**（本机直接调用，或通过本机 **SSH** 免密调远程 `agy`） | 免密永不过期、零额度消耗，见[数据来源](docs/internals.md) |
+## 快速上手
 
-   > **火山方舟这条特别注意：不要用主账号的 AK/SK。** 它的用量接口只认火山签名（AK/SK），而 AK/SK 能签这个身份名下的**所有**管理接口——远不止查用量。
-   > 正确做法：建一个**只读子账号**（访问方式只勾「编程访问」、不给控制台密码），挂 `ArkReadOnlyAccess`（火山方舟只读）+ `BillingCenterReadOnlyAccess`（费用中心只读）两个预设策略，再用它的 AK/SK。
+1. 启动 **QuotaDock**，点击胶囊展开面板并进入右上角 **⚙ 设置**。
+2. 在对应服务商分段点击 **＋ 添加账户**，填入凭据并保存（剪贴板命中凭据时会提示一键填入）：
 
-3. **保存并刷新**。剪贴板里检测到凭据时会提示一键填入；粘贴的内容认不出来时，表单会留在原地告诉你**是哪个框没认出来**。
+| 服务商 | 所需凭据 | 获取入口 |
+|---|---|---|
+| **GLM** | API Key（推荐，长期有效）或 `bigmodel_token_production` Cookie | [bigmodel.cn](https://www.bigmodel.cn/coding-plan/personal/overview) → 控制台 API Keys |
+| **DeepSeek** | `sk-` API Key（选配：控制台 LocalStorage `userToken`） | [platform.deepseek.com](https://platform.deepseek.com) → API Keys |
+| **火山方舟** | **只读 IAM 子账号** AK / SK（见下方安全说明） | [console.volcengine.com/iam/keymanage](https://console.volcengine.com/iam/keymanage) |
+| **OpenAI Codex** | SSH 主机别名 / 读本机 / 粘贴 `~/.codex/auth.json` | 详见 [数据来源与接口说明](docs/internals.md) |
+| **Google Gemini** | 本机 `agy` CLI 或免密 SSH 主机别名 | 详见 [数据来源与接口说明](docs/internals.md) |
 
-## 更多
+<details>
+<summary>安全提示：火山方舟 IAM 只读子账号配置 & 跨机器 SSH 免密配置</summary>
 
-- [使用细节](docs/manual.md)：多账户、贴边模式、设置、快捷操作、峰谷时段、已知边界
-- [数据来源与开发](docs/internals.md)：四家接口与解析口径、隐私、开发与打包
+- **火山方舟切勿使用主账号 AK/SK**：请创建仅勾选「编程访问」的 IAM 子用户，仅挂载 `ArkReadOnlyAccess` 与 `BillingCenterReadOnlyAccess` 两条只读预设策略。
+- **Codex / Gemini 跨机器 SSH 免密**：在 Windows 的 `%USERPROFILE%\.ssh\config` 配置 `Host` 与 `IdentityFile`，并在终端验证 `ssh -o BatchMode=yes <别名> "echo ok"` 返回 `ok` 后，在挂件中直接填写该别名即可。
 
-## 开发
+</details>
+
+## 隐私与安全
+
+- **本地存储**：配置与历史样本仅保存在 `%APPDATA%\QuotaDock\`，无任何云端同步或遥测上报。
+- **进程隔离**：Electron 启用 `contextIsolation` + `sandbox`，凭据明文严禁出主进程（界面仅回显尾号）。
+- **最小权限与安全执行**：外部链接仅放行已注册服务商官方域名；SSH 调用采用参数白名单与 `execFile`（不经 shell），杜绝命令注入。
+
+## 文档与开发
+
+- [使用手册](docs/manual.md)：多账户布局、贴边圆圈与双环口径、快捷操作、峰谷时段与已知边界
+- [数据来源与开发指南](docs/internals.md)：各平台接口解析口径、目录架构、扩展新 Provider 与打包说明
 
 ```bash
-npm install && npm start   # 本地跑起来（F12 开 DevTools）
-npm run test:main          # 其余测试见 package.json
+git clone https://github.com/liuxsh9/quotadock.git
+cd quotadock
+npm install
+npm start            # 本地启动（开发环境支持 F12 打开 DevTools）
+npm run test:main    # 主进程集成测试（其余测试见 package.json）
 ```
-
-> 真实凭据一律走环境变量（`GLM_TOKEN` / `DS_API_KEY` / `/tmp/glm_token`），代码与测试里不出现明文。目录结构、加新 provider、打包细节见[数据来源与开发](docs/internals.md)。
-
-## 隐私
-
-凭据只存在本机 `%APPDATA%\GLM 用量挂件\config.json`，明文不出主进程（界面只用尾号回显）；请求直连各家官方域名，不经任何第三方。
 
 ## License
 
-MIT © liuxsh9
+[MIT](LICENSE) © liuxsh9
